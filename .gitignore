@@ -1,0 +1,9 @@
+﻿bin/
+tests/media/real/
+out/
+cache/
+build/
+dist/
+.venv/
+__pycache__/
+*.pyc
