@@ -11,7 +11,7 @@ from PIL import Image
 
 from slideshow.core.ffmpeg import ProgressCallback, run_ffmpeg
 from slideshow.core.importer import open_photo, video_info
-from slideshow.core.normalize import cached_normalized
+from slideshow.core.normalize import cached_normalized, to_bt709_scale
 from slideshow.core.project import FPS, Item, Project, TimelineEntry
 from slideshow.render.cache import cleanup_tmp, file_fingerprint, make_key, tmp_path
 from slideshow.render.encoder import encoder_args
@@ -37,10 +37,11 @@ class RenderConfig:
         return self.cache_dir / "work"
 
 
-def to_bt709() -> str:
-    """Einheitliches Ausgabeformat: bt709, begrenzter Bereich, yuv420p, quadratische Pixel."""
+def to_bt709(assume_bt709: bool = False) -> str:
+    """Einheitliches Ausgabeformat: bt709, begrenzter Bereich, yuv420p, quadratische Pixel.
+    assume_bt709: Quelle ohne Farbangaben wird als bt709 gelesen (FFmpeg nähme sonst bt601)."""
     return (
-        "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,"
+        f"{to_bt709_scale(assume_bt709)},"
         # Farbangaben fest setzen, sonst bleiben sie bei Fotos/Handyvideos "unbekannt"
         "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv,"
         "setsar=1"
@@ -178,7 +179,7 @@ def render_segment(
     if item.kind == "video":
         # Zu kurze Clips mit dem letzten Bild auffüllen, dann exakt auf n Bilder schneiden
         graph.append(
-            f"[{last}]{to_bt709()},tpad=stop_mode=clone:stop_duration={seconds},"
+            f"[{last}]{to_bt709(info.color_tags_missing)},tpad=stop_mode=clone:stop_duration={seconds},"
             f"trim=end_frame={n},settb=1/{FPS},setpts=N[v]"
         )
     else:

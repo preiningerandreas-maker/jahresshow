@@ -26,7 +26,7 @@ from slideshow.render.cache import (
 )
 
 # Erhöhen, wenn sich das Arbeitsformat ändert (alte Dateien im Cache werden dann ungültig)
-NORMALIZE_VERSION = 1
+NORMALIZE_VERSION = 2
 MAX_HEIGHT = 1080
 SAMPLE_RATE = 48000
 AUDIO_BITRATE = "192k"
@@ -61,7 +61,7 @@ NormalizeCallback = Callable[[NormalizeProgress], None]
 
 def tonemap_filter(info: VideoInfo) -> str:
     """HDR → SDR bt709: linearisieren, hable-Tonemapping, zurück nach bt709 begrenzter Bereich."""
-    tin = _ZSCALE_TRANSFER.get(info.color_transfer, "smpte2084")
+    tin = _ZSCALE_TRANSFER.get(info.transfer, "smpte2084")
     pin = _ZSCALE_PRIMARIES.get(info.color_primaries, "bt2020")
     min_ = _ZSCALE_MATRIX.get(info.color_space, "bt2020nc")
     rin = "pc" if info.color_range == "pc" else "tv"
@@ -70,6 +70,12 @@ def tonemap_filter(info: VideoInfo) -> str:
         "format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,"
         "zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
     )
+
+
+def to_bt709_scale(assume_bt709: bool = False) -> str:
+    """Nach 8 Bit yuv420p bt709 (begrenzter Bereich) umrechnen."""
+    src = "in_color_matrix=bt709:in_range=tv:" if assume_bt709 else ""
+    return f"scale={src}out_color_matrix=bt709:out_range=tv,format=yuv420p"
 
 
 def video_filter(info: VideoInfo) -> str:
@@ -82,7 +88,8 @@ def video_filter(info: VideoInfo) -> str:
     if info.hdr:
         parts.append(tonemap_filter(info))
     else:
-        parts.append("scale=out_color_matrix=bt709:out_range=tv,format=yuv420p")
+        # 8 und 10 Bit SDR → 8 Bit bt709; ohne Farbangaben bt709 annehmen (nicht bt601)
+        parts.append(to_bt709_scale(info.color_tags_missing))
     # Farbangaben fest auf bt709 setzen, sonst bleiben sie bei vielen Handyvideos "unbekannt"
     parts.append("setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv")
     parts.append("setsar=1")

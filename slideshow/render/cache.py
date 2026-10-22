@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 # Erhöhen, wenn sich die Render-Logik so ändert, dass alte Cache-Dateien ungültig werden
-RENDER_VERSION = 2
+RENDER_VERSION = 3
 
 
 def default_cache_dir() -> Path:
