@@ -10,6 +10,7 @@ import wave
 from pathlib import Path
 
 import pytest
+from mediacheck import yuv_at
 
 from slideshow.cli import main as cli_main
 from slideshow.core.ffmpeg import Cancelled, probe, run_ffmpeg
@@ -220,3 +221,36 @@ def test_hard_cut_then_transition_in_one_block(synthetic: Path, umlaut_dir: Path
     assert result.blocks_total == 1
     v, _, _ = _streams(out)
     assert int(v["nb_frames"]) == p.total_frames(clip_length)
+
+
+# Sollwerte bt709, begrenzter Bereich (Y 16–235, U/V 16–240): Weiß und reines Rot
+# (bt601 ergäbe für Rot Y 81, U 90 – das wäre der Fehler bei der automatischen Umwandlung)
+TEXT_YUV = {"#FFFFFF": (235.0, 128.0, 128.0), "#FF0000": (62.6, 102.3, 240.0)}
+
+
+def test_text_overlay_colors_bt709(synthetic: Path, umlaut_dir: Path) -> None:
+    """Weißes und rotes Textfeld auf Farbfläche, Foto und Video: Pixelwerte im Endvideo."""
+    _copy_media(synthetic, umlaut_dir, "Querformat Wörthersee.jpg", "Video mit Ton.mp4")
+    backgrounds = [
+        {"kind": "title"},
+        {"kind": "photo", "path": "Querformat Wörthersee.jpg"},
+        {"kind": "video", "path": "Video mit Ton.mp4", "audio": False},
+    ]
+    items = [
+        Item(**bg, duration=1.0, transition="none",
+             text=TextOverlay("Ä", position="center", size=200, color=color,
+                              bar_color=color, bar_opacity=1.0))
+        for bg in backgrounds for color in TEXT_YUV
+    ]
+    out = umlaut_dir / "Textfarben Ü.mp4"
+    render_project(Project(items=items, base_dir=umlaut_dir),
+                   RenderOptions(out, encoder="libx264", cache_dir=umlaut_dir / "cache"))
+    v, _, _ = _streams(out)
+    assert (int(v["width"]), int(v["height"])) == (1920, 1080)
+    for i, item in enumerate(items):
+        assert item.text is not None
+        expected = TEXT_YUV[item.text.color]
+        # Mitte des Balkens, links neben dem Text
+        got = yuv_at(out, 0.1, 0.5, at=i + 0.5)
+        assert all(abs(g - e) <= 2 for g, e in zip(got, expected, strict=True)), (
+            item.kind, item.text.color, got, expected)

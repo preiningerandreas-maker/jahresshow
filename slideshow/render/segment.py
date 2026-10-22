@@ -48,6 +48,10 @@ def to_bt709(assume_bt709: bool = False) -> str:
     )
 
 
+# Text-PNG (RGBA) ausdrücklich mit bt709 nach YUV; overlay nähme sonst bt601
+TEXT_TO_YUV = "format=rgba,scale=out_color_matrix=bt709:out_range=tv,format=yuva420p"
+
+
 def fit_filter(fit: str, w: int, h: int, src: str, out: str) -> str:
     """Formatmodus als Filtergraph-Abschnitt von [src] nach [out]."""
     if fit == "black":
@@ -170,22 +174,26 @@ def render_segment(
 
     fit_mode = item.fit if item.kind == "video" else fit
     graph.append(fit_filter(fit_mode, w, h, "src", "fit"))
-    last = "fit"
+    # Erst Bild und Text getrennt nach bt709 YUV, dann in YUV überblenden
+    assume_bt709 = item.kind == "video" and info.color_tags_missing
+    graph.append(f"[fit]{to_bt709(assume_bt709)}[base]")
+    last = "base"
     if text_png is not None:
         args += ["-i", str(text_png)]
-        graph.append(f"[{last}][1:v]overlay=0:0[txt]")
+        graph.append(f"[1:v]{TEXT_TO_YUV}[text]")
+        graph.append(f"[{last}][text]overlay=0:0:format=yuv420[txt]")
         last = "txt"
 
     if item.kind == "video":
         # Zu kurze Clips mit dem letzten Bild auffüllen, dann exakt auf n Bilder schneiden
         graph.append(
-            f"[{last}]{to_bt709(info.color_tags_missing)},tpad=stop_mode=clone:stop_duration={seconds},"
+            f"[{last}]tpad=stop_mode=clone:stop_duration={seconds},"
             f"trim=end_frame={n},settb=1/{FPS},setpts=N[v]"
         )
     else:
         # Standbild nur einmal berechnen und dann wiederholen
         graph.append(
-            f"[{last}]{to_bt709()},loop=loop={n - 1}:size=1:start=0,settb=1/{FPS},setpts=N[v]"
+            f"[{last}]loop=loop={n - 1}:size=1:start=0,settb=1/{FPS},setpts=N[v]"
         )
 
     if has_audio:

@@ -131,3 +131,22 @@ def pixel_rgb(path: Path, x: float, y: float) -> tuple[int, int, int]:
                 "-f", "rawvideo"])
     i = (min(15, int(y * 16)) * 16 + min(15, int(x * 16))) * 3
     return raw[i], raw[i + 1], raw[i + 2]
+
+
+def yuv_at(path: Path, x: float, y: float, *, at: float = 0.5,
+           block: int = 16) -> tuple[float, float, float]:
+    """Mittlere Y/U/V-Werte (8 Bit, ohne Umrechnung) eines Blocks um die relative Position."""
+    v, _ = streams(path)
+    w, h = int(v["width"]), int(v["height"])
+    raw = _raw(["-ss", f"{at:.3f}", "-i", str(path), "-frames:v", "1",
+                "-pix_fmt", "yuv420p", "-f", "rawvideo"])
+    cx, cy = int(x * w) // 2 * 2, int(y * h) // 2 * 2
+    x0, y0 = max(0, cx - block // 2), max(0, cy - block // 2)
+    luma = [raw[r * w + c] for r in range(y0, y0 + block) for c in range(x0, x0 + block)]
+    cw, ch = w // 2, h // 2
+    u_off, v_off = w * h, w * h + cw * ch
+    chroma = [(r * cw + c) for r in range(y0 // 2, (y0 + block) // 2)
+              for c in range(x0 // 2, (x0 + block) // 2)]
+    n = len(chroma)
+    return (sum(luma) / len(luma), sum(raw[u_off + i] for i in chroma) / n,
+            sum(raw[v_off + i] for i in chroma) / n)
