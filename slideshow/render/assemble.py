@@ -29,6 +29,7 @@ from slideshow.core.project import FPS, PREVIEW_SIZE, RESOLUTIONS, Project, Time
 from slideshow.render.audio import build_music, duck_ranges
 from slideshow.render.cache import (
     cleanup_tmp,
+    commit_tmp,
     default_cache_dir,
     make_key,
     tmp_path,
@@ -342,7 +343,7 @@ def render_project(
                             "-frames:v", str(block.frames), *final_args,
                             "-c:a", "flac", str(tmp)],
                            progress=blk_progress, cancel=cancel)
-                tmp.replace(out)
+                commit_tmp(tmp, out)
             finally:
                 cleanup_tmp(tmp)
         done += block.frames
@@ -356,7 +357,8 @@ def render_project(
     report("Video wird gespeichert", 0.93)
     work = cache_dir / "work"
     work.mkdir(parents=True, exist_ok=True)
-    concat_list = work / f"concat_{make_key({'blocks': [b.stem for b in block_files]})}.txt"
+    concat_key = make_key({"blocks": [b.stem for b in block_files]})
+    concat_list = tmp_path(work / f"concat_{concat_key}.txt")
     concat_list.write_text("\n".join(_concat_line(b) for b in block_files) + "\n", "utf-8")
 
     output = opts.output

@@ -13,7 +13,13 @@ from slideshow.core.ffmpeg import ProgressCallback, run_ffmpeg
 from slideshow.core.importer import open_photo, video_info
 from slideshow.core.normalize import cached_normalized, normalize_video, to_bt709_scale
 from slideshow.core.project import FPS, Item, Project, TimelineEntry
-from slideshow.render.cache import cleanup_tmp, file_fingerprint, make_key, tmp_path
+from slideshow.render.cache import (
+    cleanup_tmp,
+    commit_tmp,
+    file_fingerprint,
+    make_key,
+    tmp_path,
+)
 from slideshow.render.encoder import encoder_args
 from slideshow.render.text import font_file, save_text_png
 
@@ -151,7 +157,7 @@ def render_segment(
 
     text_png: Path | None = None
     if item.text is not None and item.text.text.strip():
-        text_png = save_text_png(item.text, w, h, cfg.work_dir / f"{key}_text.png")
+        text_png = save_text_png(item.text, w, h, tmp_path(cfg.work_dir / f"{key}_text.png"))
         work.append(text_png)
 
     if item.kind == "video":
@@ -166,7 +172,7 @@ def render_segment(
         graph.append(f"[0:v]fps={FPS}:start_time=0[src]")
         has_audio = info.has_audio and item.audio
     else:
-        pre = cfg.work_dir / f"{key}_src.png"
+        pre = tmp_path(cfg.work_dir / f"{key}_src.png")
         if item.kind == "title" and not item.path:
             Image.new("RGB", (w, h), item.background).save(pre, "PNG")
             fit = "black"
@@ -226,7 +232,7 @@ def render_segment(
     ]
     try:
         run_ffmpeg(args, progress=progress, cancel=cancel)
-        tmp.replace(final)
+        commit_tmp(tmp, final)
     finally:
         cleanup_tmp(tmp)
         for p in work:

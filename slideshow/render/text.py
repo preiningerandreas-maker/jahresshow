@@ -9,6 +9,7 @@ from pathlib import Path
 from PIL import Image, ImageColor, ImageDraw, ImageFont
 
 from slideshow.core.project import TextOverlay
+from slideshow.render.cache import cleanup_tmp, commit_tmp, tmp_path
 
 FONT_DIR = Path(__file__).resolve().parents[1] / "assets" / "fonts"
 BUNDLED_FONTS = {"noto sans": FONT_DIR / "NotoSans.ttf"}
@@ -110,7 +111,10 @@ def render_text(overlay: TextOverlay, width: int, height: int) -> Image.Image:
 
 
 def save_text_png(overlay: TextOverlay, width: int, height: int, out: Path) -> Path:
-    tmp = out.with_suffix(".tmp.png")
-    render_text(overlay, width, height).save(tmp, "PNG")
-    tmp.replace(out)
+    tmp = tmp_path(out)
+    try:
+        render_text(overlay, width, height).save(tmp, "PNG")
+        commit_tmp(tmp, out)
+    finally:
+        cleanup_tmp(tmp)
     return out

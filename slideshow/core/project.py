@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
@@ -92,6 +93,7 @@ class Settings:
     transition: str = "fade"
     transition_duration: float = 1.0
     resolution: str = "1080p"
+    chapters: bool = True  # Zwischentitel pro Monat (nur für die Oberfläche)
 
     def validate(self) -> None:
         if self.transition not in TRANSITIONS:
@@ -227,9 +229,13 @@ class Project:
     def save(self, path: str | os.PathLike[str]) -> None:
         path = Path(path)
         self.base_dir = path.resolve().parent
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=2), "utf-8")
-        tmp.replace(path)
+        # Eindeutiger Zwischenname, dann umbenennen: nie eine halb geschriebene Projektdatei
+        tmp = path.with_name(f"{path.name}.{os.getpid()}-{uuid.uuid4().hex[:8]}.tmp")
+        try:
+            tmp.write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=2), "utf-8")
+            tmp.replace(path)
+        finally:
+            tmp.unlink(missing_ok=True)
 
     @classmethod
     def load(cls, path: str | os.PathLike[str]) -> Project:

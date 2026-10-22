@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 from slideshow.core.ffmpeg import CREATIONFLAGS, ffmpeg_path
+from slideshow.render.cache import atomic_write_text
 
 ENCODERS = ("h264_nvenc", "h264_qsv", "h264_amf", "libx264")
 
@@ -108,5 +109,5 @@ def detect_encoder(cache_dir: Path | None = None, forced: str | None = None) -> 
             raise RuntimeError("Kein Videokodierer funktioniert – ist ffmpeg.exe vollständig?")
     if cache_file:
         cache_file.parent.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(json.dumps({"ffmpeg": key, "results": results}), "utf-8")
+        atomic_write_text(cache_file, json.dumps({"ffmpeg": key, "results": results}))
     return chosen

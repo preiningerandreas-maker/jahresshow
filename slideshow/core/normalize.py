@@ -20,6 +20,7 @@ from slideshow.core.importer import VideoInfo, video_info
 from slideshow.core.project import FPS
 from slideshow.render.cache import (
     cleanup_tmp,
+    commit_tmp,
     default_cache_dir,
     file_fingerprint,
     make_key,
@@ -223,7 +224,7 @@ def _normalize(src: Path, final: Path, *, encoder: str, hwaccel: bool,
                 cleanup_tmp(tmp)
                 if i == len(attempts) - 1:
                     raise
-        tmp.replace(final)
+        commit_tmp(tmp, final)
     finally:
         cleanup_tmp(tmp)
     if progress is not None:

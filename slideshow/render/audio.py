@@ -9,7 +9,13 @@ from pathlib import Path
 from slideshow.core.ffmpeg import ProgressCallback, run_ffmpeg
 from slideshow.core.importer import video_info
 from slideshow.core.project import FPS, Project, TimelineEntry
-from slideshow.render.cache import cleanup_tmp, file_fingerprint, make_key, tmp_path
+from slideshow.render.cache import (
+    cleanup_tmp,
+    commit_tmp,
+    file_fingerprint,
+    make_key,
+    tmp_path,
+)
 
 SAMPLE_RATE = 48000
 DUCK_RAMP = 0.5  # Sekunden für das Absenken/Anheben der Musik
@@ -71,7 +77,7 @@ def build_music(
         try:
             run_ffmpeg([*args, "-filter_complex", ";".join(chain), "-map", "[m]",
                         "-c:a", "pcm_s16le", str(tmp)], cancel=cancel)
-            tmp.replace(playlist)
+            commit_tmp(tmp, playlist)
         finally:
             cleanup_tmp(tmp)
 
@@ -98,7 +104,7 @@ def build_music(
         run_ffmpeg(["-stream_loop", "-1", "-i", str(playlist), "-filter_complex", filt,
                     "-map", "[m]", "-c:a", "pcm_s16le", str(tmp)],
                    progress=progress, cancel=cancel)
-        tmp.replace(out)
+        commit_tmp(tmp, out)
     finally:
         cleanup_tmp(tmp)
     return out
