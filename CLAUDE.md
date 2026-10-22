@@ -63,7 +63,7 @@ Beim Start Probe-Encode (1 s testsrc) in dieser Reihenfolge: `h264_nvenc`, `h264
 Jedes Video einmalig in Arbeitsformat umwandeln: 1080p (Höhe max. 1080), 30 fps CFR (VFR-Handyvideos sonst asynchron), SDR yuv420p H.264, Audio AAC 48 kHz. HDR (bt2020/smpte2084/arib-std-b67) per zscale + tonemap=hable nach bt709. Hardware-Dekodierung wenn verfügbar, sonst CPU. Fortschritt in der GUI anzeigen.
 
 ### Blur-Fill
-Hintergrund: Quelle auf 1/8 verkleinern, boxblur, auf 1920×1080 füllend skalieren und beschneiden, Helligkeit -0.15. Vordergrund: Original auf Höhe 1080, zentriert darüber. Gilt für Fotos und Videos.
+Hintergrund: Quelle auf 1/16 verkleinern, boxblur, auf 1920×1080 füllend skalieren und beschneiden, Helligkeit -0.15. Vordergrund: Original auf Höhe 1080, zentriert darüber. Gilt für Fotos und Videos.
 
 ### Text
 Text mit Pillow als transparentes PNG rendern, per overlay einblenden. Kein drawtext (Font-Pfade unter Windows). Schrift mitliefern (Noto Sans oder Inter, OFL-Lizenz), Umlaute und ß müssen funktionieren.
