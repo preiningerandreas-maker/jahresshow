@@ -26,6 +26,7 @@ Schlankes Windows-Programm, das aus Fotos und Videos eine Slideshow mit eigener 
 Erkennung immer über Metadaten (ffprobe/EXIF), nie über Marke, Modell oder Dateinamen.
 - H.264 8 Bit SDR (ältere Android, WhatsApp): direkt normalisieren
 - HEVC 8/10 Bit SDR (aktuelle Handys ohne HDR): 10 Bit auf 8 Bit, bt709
+- HEVC SDR mit bt2020-Primärfarben (manche Handys ohne HDR): per zscale Farbraum nach bt709 umrechnen, ohne Tonemapping
 - HDR10/HDR10+ (PQ, smpte2084, Samsung): Tonemapping nach bt709
 - HLG (arib-std-b67, Pixel, manche Android): Tonemapping nach bt709
 - Dolby Vision Profil 8.4 (iPhone): als HLG behandeln, DV-Metadaten ignorieren

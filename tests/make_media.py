@@ -136,6 +136,20 @@ def _hevc_sdr(out: Path, bits: int) -> None:
     ])
 
 
+def _hevc_bt2020_sdr(out: Path) -> None:
+    """HEVC 10 Bit SDR mit bt2020-Primärfarben: Fläche RGB (50, 180, 60) in bt709."""
+    run_ffmpeg([
+        "-f", "lavfi", "-i", "color=c=0x32B43C:size=320x180:rate=30:duration=1",
+        "-vf", "format=rgb24,scale=out_color_matrix=bt709:out_range=tv,format=yuv444p,"
+               "zscale=pin=bt709:tin=bt709:min=bt709:rin=tv:"
+               "p=bt2020:t=bt2020-10:m=bt2020nc:r=tv,format=yuv420p10le",
+        "-c:v", "libx265", "-preset", "ultrafast", "-crf", "20",
+        "-x265-params", "log-level=error:colorprim=bt2020:transfer=bt2020-10:"
+                        "colormatrix=bt2020nc",
+        "-tag:v", "hvc1", str(out),
+    ])
+
+
 def _hdr10plus(out: Path) -> None:
     """HDR10+: PQ mit dynamischen Metadaten (Samsung)."""
     meta = out.with_suffix(".tmp.json")
@@ -237,6 +251,7 @@ MEDIA: dict[str, Callable[[Path], None]] = {
     "VFR Blitz Ton.mp4": lambda p: _vfr_sync(p),
     "HEVC SDR 8 Bit.mp4": lambda p: _hevc_sdr(p, 8),
     "HEVC SDR 10 Bit.mp4": lambda p: _hevc_sdr(p, 10),
+    "HEVC SDR bt2020.mp4": _hevc_bt2020_sdr,
     "HDR10plus.mp4": _hdr10plus,
     "iPhone HLG.mov": lambda p: _hdr_video(p, (640, 360), 2, "arib-std-b67"),
     "Drehung 90.mp4": lambda p: _rotated(p, 90),

@@ -28,7 +28,7 @@ from slideshow.core.importer import (
     photo_info,
     video_info,
 )
-from slideshow.core.normalize import normalize_video, tonemap_filter
+from slideshow.core.normalize import normalize_video, tonemap_filter, video_filter
 from slideshow.core.project import FPS, Item, Project
 from slideshow.render.assemble import RenderOptions, render_project
 
@@ -82,6 +82,24 @@ def test_hevc_sdr(synthetic: Path, umlaut_dir: Path, name: str, pix_fmt: str) ->
     assert v["pix_fmt"] == "yuv420p"  # 8 Bit
     # Kein Tonemapping bei SDR: Helligkeit bleibt gleich
     assert mean_rgb(out) == pytest.approx(mean_rgb(src), abs=6)
+
+
+# --- HEVC SDR mit bt2020-Primärfarben: Farbraum nach bt709 umrechnen ----------------------
+
+
+def test_hevc_sdr_bt2020_primaries_converted(synthetic: Path, umlaut_dir: Path) -> None:
+    src, out = _normalize(synthetic, "HEVC SDR bt2020.mp4", umlaut_dir)
+    info = video_info(src)
+    assert (info.color_primaries, info.transfer) == ("bt2020", "bt2020-10")
+    assert info.wide_gamut and not info.hdr
+    assert "tonemap" not in video_filter(info) and "p=bt709" in video_filter(info)
+    assert not video_info(synthetic / "HEVC SDR 10 Bit.mp4").wide_gamut
+    v, _ = assert_working_format(out)
+    # Quelle: Fläche RGB (50, 180, 60) in bt709, gespeichert in bt2020
+    target = (50, 180, 60)
+    assert _close_rgb(mean_rgb(out), target, tol=6), mean_rgb(out)
+    # Gegenprobe: nur die Matrix umgerechnet (ohne Primärfarben) wirkt deutlich blasser
+    assert not _close_rgb(mean_rgb(src, matrix="bt2020"), target, tol=20)
 
 
 # --- HDR10/HDR10+ (PQ): Tonemapping nach bt709 ---------------------------------------------

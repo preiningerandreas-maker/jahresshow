@@ -82,6 +82,11 @@ class VideoInfo:
         return self.transfer in HDR_TRANSFERS
 
     @property
+    def wide_gamut(self) -> bool:
+        """SDR mit bt2020-Primärfarben (manche Handys ohne HDR): Farben umrechnen."""
+        return not self.hdr and self.color_primaries == "bt2020"
+
+    @property
     def color_tags_missing(self) -> bool:
         """WhatsApp, Bearbeitungs-Apps: ohne Farbangaben wird bt709 angenommen."""
         return self.color_space in ("unknown", "", "reserved")

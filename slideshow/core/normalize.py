@@ -1,5 +1,6 @@
 """Videos einmalig ins Arbeitsformat umwandeln: Höhe max. 1080, 30 fps konstant, SDR yuv420p
-H.264 (bt709), Ton AAC 48 kHz. HDR (PQ/HLG) wird per zscale + tonemap=hable nach bt709 gebracht.
+H.264 (bt709), Ton AAC 48 kHz. HDR (PQ/HLG) wird per zscale + tonemap=hable nach bt709 gebracht,
+SDR mit bt2020-Primärfarben per zscale nach bt709 umgerechnet.
 
 Das Ergebnis liegt dauerhaft im Cache (Schlüssel = Quelldatei + Einstellungen), auf langsamen
 Geräten läuft die Umwandlung im Hintergrund mit Fortschritt und Restzeit.
@@ -26,12 +27,13 @@ from slideshow.render.cache import (
 )
 
 # Erhöhen, wenn sich das Arbeitsformat ändert (alte Dateien im Cache werden dann ungültig)
-NORMALIZE_VERSION = 2
+NORMALIZE_VERSION = 3
 MAX_HEIGHT = 1080
 SAMPLE_RATE = 48000
 AUDIO_BITRATE = "192k"
 
-_ZSCALE_TRANSFER = {"smpte2084": "smpte2084", "arib-std-b67": "arib-std-b67"}
+_ZSCALE_TRANSFER = {"smpte2084": "smpte2084", "arib-std-b67": "arib-std-b67",
+                    "bt709": "bt709", "bt2020-10": "bt2020-10", "bt2020-12": "bt2020-12"}
 _ZSCALE_PRIMARIES = {"bt2020": "bt2020", "bt709": "bt709"}
 _ZSCALE_MATRIX = {"bt2020nc": "bt2020nc", "bt2020c": "bt2020c", "bt709": "bt709"}
 
@@ -59,17 +61,28 @@ class NormalizeProgress:
 NormalizeCallback = Callable[[NormalizeProgress], None]
 
 
-def tonemap_filter(info: VideoInfo) -> str:
-    """HDR → SDR bt709: linearisieren, hable-Tonemapping, zurück nach bt709 begrenzter Bereich."""
-    tin = _ZSCALE_TRANSFER.get(info.transfer, "smpte2084")
+_TO_BT709_YUV = "zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
+
+
+def _linear_bt709(info: VideoInfo, default_transfer: str) -> str:
+    """Linearisieren und Primärfarben nach bt709 umrechnen (Gleitkomma-RGB)."""
+    tin = _ZSCALE_TRANSFER.get(info.transfer, default_transfer)
     pin = _ZSCALE_PRIMARIES.get(info.color_primaries, "bt2020")
     min_ = _ZSCALE_MATRIX.get(info.color_space, "bt2020nc")
     rin = "pc" if info.color_range == "pc" else "tv"
-    return (
-        f"zscale=tin={tin}:pin={pin}:min={min_}:rin={rin}:t=linear:npl=100,"
-        "format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,"
-        "zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
-    )
+    return (f"zscale=tin={tin}:pin={pin}:min={min_}:rin={rin}:t=linear:npl=100,"
+            "format=gbrpf32le,zscale=p=bt709")
+
+
+def tonemap_filter(info: VideoInfo) -> str:
+    """HDR → SDR bt709: linearisieren, hable-Tonemapping, zurück nach bt709 begrenzter Bereich."""
+    return f"{_linear_bt709(info, 'smpte2084')},tonemap=tonemap=hable:desat=0,{_TO_BT709_YUV}"
+
+
+def gamut_filter(info: VideoInfo) -> str:
+    """SDR mit bt2020-Primärfarben → bt709, ohne Tonemapping; Farben außerhalb von bt709
+    werden begrenzt."""
+    return f"{_linear_bt709(info, 'bt709')},{_TO_BT709_YUV}"
 
 
 def to_bt709_scale(assume_bt709: bool = False) -> str:
@@ -87,6 +100,9 @@ def video_filter(info: VideoInfo) -> str:
         parts.append("scale=trunc(iw/2)*2:trunc(ih/2)*2")
     if info.hdr:
         parts.append(tonemap_filter(info))
+    elif info.wide_gamut:
+        # Sonst würden nur die Angaben geändert und die Farben wirkten blass
+        parts.append(gamut_filter(info))
     else:
         # 8 und 10 Bit SDR → 8 Bit bt709; ohne Farbangaben bt709 annehmen (nicht bt601)
         parts.append(to_bt709_scale(info.color_tags_missing))
