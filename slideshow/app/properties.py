@@ -306,7 +306,7 @@ class ItemPanel(QWidget):
         if not items:
             self.header.setText("Nichts ausgewählt")
         elif len(items) > 1:
-            self.header.setText(f"{len(items)} Elemente ausgewählt – Änderungen gelten für alle")
+            self.header.setText(f"{len(items)} Elemente ausgewählt: Änderungen gelten für alle")
         else:
             it = items[0]
             if is_chapter_title(it):

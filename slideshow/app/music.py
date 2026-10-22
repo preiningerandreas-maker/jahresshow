@@ -200,7 +200,7 @@ class MusicPanel(QWidget):
         if self._show_seconds:
             text += f", Show {format_minutes(self._show_seconds)}"
             if total and total < self._show_seconds:
-                text += " – die Musik wird wiederholt."
+                text += ", die Musik wird wiederholt."
             elif total:
-                text += " – die Musik wird am Ende ausgeblendet."
+                text += ", die Musik wird am Ende ausgeblendet."
         self.summary.setText(text)

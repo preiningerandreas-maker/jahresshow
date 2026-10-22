@@ -156,17 +156,16 @@ class VideoPrep(QObject):
         with self._lock:
             n = min(self._done + 1, self._total)
             total = self._total
-        name = f": „{src.name}“" if src is not None else ""
-        return f"Videos werden für die Show vorbereitet (umgewandelt) – {n} von {total}{name}"
+        name = f" („{src.name}“)" if src is not None else ""
+        return f"Videos werden für die Show umgewandelt: {n} von {total}{name}"
 
     def _emit_status(self, src: Path | None, p: NormalizeProgress | None) -> None:
         text = self._label(src)
         frac = 0.0
         if p is not None:
-            text += f" – {round(p.fraction * 100)} %"
             if p.eta is not None:
                 minutes = max(1, round(p.eta / 60))
-                text += f", noch ca. {minutes} min"
+                text += f", dieses Video noch ca. {minutes} min"
             frac = p.fraction
         with self._lock:
             overall = (self._done + frac) / self._total if self._total else 1.0
