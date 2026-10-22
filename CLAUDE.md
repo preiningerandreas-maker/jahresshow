@@ -22,6 +22,21 @@ Schlankes Windows-Programm, das aus Fotos und Videos eine Slideshow mit eigener 
 11. Vorschau eines gewählten Abschnitts in 480p
 12. Export MP4
 
+## Unterstützte Quellen (handyunabhängig)
+Erkennung immer über Metadaten (ffprobe/EXIF), nie über Marke, Modell oder Dateinamen.
+- H.264 8 Bit SDR (ältere Android, WhatsApp): direkt normalisieren
+- HEVC 8/10 Bit SDR (aktuelle Handys ohne HDR): 10 Bit auf 8 Bit, bt709
+- HDR10/HDR10+ (PQ, smpte2084, Samsung): Tonemapping nach bt709
+- HLG (arib-std-b67, Pixel, manche Android): Tonemapping nach bt709
+- Dolby Vision Profil 8.4 (iPhone): als HLG behandeln, DV-Metadaten ignorieren
+- Drehung nur in Metadaten (rotate/displaymatrix, alle Handys): korrekt drehen
+- Hohe Bildraten 60/120/240 fps und VFR: auf 30 fps CFR
+- MOV-Container (iPhone): wie MP4
+- JPG, HEIC/HEIF, PNG: EXIF-Drehung und Datum
+- Live Photos (iPhone HEIC+MOV) und Motion Photos (Samsung JPG mit Video): V1 nur Standbild
+- Fehlende Farbmetadaten (WhatsApp, Bearbeitungs-Apps): als bt709 annehmen
+Das Endvideo hat immer explizit gesetzte Farbmetadaten bt709 (color_primaries, color_transfer, color_space).
+
 ## Nicht-Ziele V1
 Animationen, Ken Burns, Collagen, Rahmen, Beat-Sync, DVD, Cloud, Mehrsprachigkeit.
 
