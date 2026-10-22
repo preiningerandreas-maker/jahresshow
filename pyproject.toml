@@ -23,7 +23,7 @@ dev = ["pytest>=8", "pytest-qt>=4.4", "ruff>=0.5"]
 include = ["slideshow*"]
 
 [tool.setuptools.package-data]
-slideshow = ["assets/fonts/*"]
+slideshow = ["assets/fonts/*", "assets/icons/*"]
 
 [tool.ruff]
 line-length = 100
