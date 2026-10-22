@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from mediacheck import (
+    assert_working_format,
     first_bright_frame_time,
     first_loud_sample_time,
     mean_luma,
@@ -35,22 +36,6 @@ def _copy(synthetic: Path, name: str, target_dir: Path, new_name: str | None = N
     return dst
 
 
-def _assert_working_format(path: Path) -> tuple[dict, dict | None]:
-    v, a = streams(path)
-    assert v["codec_name"] == "h264"
-    assert v["pix_fmt"] == "yuv420p"
-    assert v["r_frame_rate"] == "30/1"
-    assert v["avg_frame_rate"] == "30/1"
-    assert int(v["height"]) <= 1080
-    assert v.get("color_transfer") == "bt709"
-    assert v.get("color_primaries") == "bt709"
-    assert not any("rotation" in sd for sd in v.get("side_data_list", []))
-    if a is not None:
-        assert a["codec_name"] == "aac"
-        assert a["sample_rate"] == "48000"
-    return v, a
-
-
 # --- (4) VFR → 30 fps CFR, Ton synchron -------------------------------------------------
 
 
@@ -61,7 +46,7 @@ def test_vfr_becomes_cfr_30fps(synthetic: Path, umlaut_dir: Path) -> None:
 
     out = normalize_video(src, umlaut_dir / "Cache Ü")
     assert "Cache Ü" in str(out)
-    v, a = _assert_working_format(out)
+    v, a = assert_working_format(out)
     assert a is not None
 
     # Konstante Bildabstände von 1/30 s
@@ -80,7 +65,7 @@ def test_vfr_flash_and_beep_stay_in_sync(synthetic: Path, umlaut_dir: Path) -> N
     auseinander."""
     src = _copy(synthetic, "VFR Blitz Ton.mp4", umlaut_dir)
     out = normalize_video(src, umlaut_dir / "cache")
-    v, a = _assert_working_format(out)
+    v, a = assert_working_format(out)
     assert a is not None
     flash = first_bright_frame_time(out)
     beep = first_loud_sample_time(out)
@@ -107,7 +92,7 @@ def test_hdr_is_tonemapped_to_bt709(synthetic: Path, umlaut_dir: Path, name: str
     assert info.hdr and info.color_transfer == transfer
 
     out = normalize_video(src, umlaut_dir / "cache")
-    v, a = _assert_working_format(out)
+    v, a = assert_working_format(out)
     assert v["color_transfer"] not in ("smpte2084", "arib-std-b67")
     assert v.get("color_space") == "bt709"
     assert (int(v["width"]), int(v["height"])) == size
@@ -119,7 +104,7 @@ def test_hdr_is_tonemapped_to_bt709(synthetic: Path, umlaut_dir: Path, name: str
 
 def test_portrait_video_capped_at_1080(synthetic: Path, umlaut_dir: Path) -> None:
     src = _copy(synthetic, "Hochkant Video.mp4", umlaut_dir)  # 1080×1920
-    v, _ = _assert_working_format(normalize_video(src, umlaut_dir / "cache"))
+    v, _ = assert_working_format(normalize_video(src, umlaut_dir / "cache"))
     assert (int(v["width"]), int(v["height"])) == (608, 1080)
 
 
@@ -173,7 +158,7 @@ def test_falls_back_to_cpu_when_hw_decoding_fails(
     monkeypatch.setattr(normalize, "run_ffmpeg", fake)
     src = _copy(synthetic, "HDR HLG.mp4", umlaut_dir)
     out = normalize_video(src, umlaut_dir / "cache")
-    _assert_working_format(out)
+    assert_working_format(out)
     assert len(calls) == 2
     assert "-hwaccel" in calls[0] and "-hwaccel" not in calls[1]
 
@@ -210,7 +195,7 @@ def test_background_normalizer(synthetic: Path, umlaut_dir: Path) -> None:
     assert errors == [broken]
     assert progress >= {a, b}
     for out in done.values():
-        _assert_working_format(out)
+        assert_working_format(out)
 
 
 def test_background_cancel_does_not_hang(synthetic: Path, umlaut_dir: Path) -> None:

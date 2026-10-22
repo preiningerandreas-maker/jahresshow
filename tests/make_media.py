@@ -106,6 +106,108 @@ def _vfr_sync(out: Path, seconds: float = 4) -> None:
     ])
 
 
+LIVE_PHOTO_ID = "5B1F2C3D-4E5F-4A6B-8C7D-9E0F1A2B3C4D"
+EXIF_MAKER_NOTE = 0x927C
+
+# HDR10+-Szene (SMPTE ST 2094-40) für x265, Format wie hdr10plus_tool
+HDR10PLUS_JSON = (
+    '{"JSONInfo":{"HDR10plusProfile":"A","Version":"1.0"},"SceneInfo":[{"LuminanceParameters":'
+    '{"AverageRGB":1000,"LuminanceDistributions":{"DistributionIndex":[1,5,10,25,50,75,90,95,99],'
+    '"DistributionValues":[10,100,200,500,1000,2000,3000,4000,5000]},"MaxScl":[5000,5000,5000]},'
+    '"NumberOfWindows":1,"TargetedSystemDisplayMaximumLuminance":400,"SceneFrameIndex":0,'
+    '"SceneId":0,"SequenceFrameIndex":0}],"SceneInfoSummary":{"SceneFirstFrameIndex":[0],'
+    '"SceneFrameNumbers":[60]},"ToolInfo":{"Tool":"jahresshow","Version":"1"}}'
+)
+
+
+def _x265_escape(path: Path) -> str:
+    return path.resolve().as_posix().replace(":", "\\:")
+
+
+def _hevc_sdr(out: Path, bits: int) -> None:
+    """HEVC SDR wie von aktuellen Handys ohne HDR, mit bt709-Farbangaben."""
+    pix = "yuv420p10le" if bits == 10 else "yuv420p"
+    run_ffmpeg([
+        "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30",
+        "-f", "lavfi", "-i", "sine=frequency=600:sample_rate=48000", "-t", "2",
+        "-vf", f"format={pix}", "-c:v", "libx265", "-preset", "ultrafast", "-crf", "30",
+        "-x265-params", "log-level=error:colorprim=bt709:transfer=bt709:colormatrix=bt709",
+        "-tag:v", "hvc1", "-ac", "2", "-c:a", "aac", "-b:a", "64k", str(out),
+    ])
+
+
+def _hdr10plus(out: Path) -> None:
+    """HDR10+: PQ mit dynamischen Metadaten (Samsung)."""
+    meta = out.with_suffix(".tmp.json")
+    meta.write_text(HDR10PLUS_JSON, "utf-8")
+    try:
+        run_ffmpeg([
+            "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-t", "2",
+            "-vf", "zscale=pin=bt709:tin=bt709:min=bt709:rin=tv:p=bt2020:t=smpte2084:"
+                   "m=bt2020nc:r=tv:npl=100,format=yuv420p10le",
+            "-c:v", "libx265", "-preset", "ultrafast", "-crf", "30",
+            "-x265-params", "log-level=error:hdr10=1:colorprim=bt2020:transfer=smpte2084:"
+                            f"colormatrix=bt2020nc:dhdr10-info={_x265_escape(meta)}",
+            "-tag:v", "hvc1", str(out),
+        ])
+    finally:
+        meta.unlink(missing_ok=True)
+
+
+def _rotated(out: Path, rotation: int) -> None:
+    """Links rot, rechts blau; Drehung nur in den Metadaten (displaymatrix)."""
+    tmp = out.with_suffix(".tmp.mp4")
+    run_ffmpeg(["-f", "lavfi", "-i", "color=c=red:size=160x180:rate=30:duration=1,"
+                "pad=320:180:0:0:blue", "-c:v", "libx264", "-preset", "veryfast",
+                "-pix_fmt", "yuv420p", str(tmp)])
+    run_ffmpeg(["-display_rotation", str(rotation), "-i", str(tmp), "-c", "copy", str(out)])
+    tmp.unlink()
+
+
+def _high_fps(out: Path, fps: int) -> None:
+    run_ffmpeg([
+        "-f", "lavfi", "-i", f"testsrc2=size=320x180:rate={fps}",
+        "-f", "lavfi", "-i", "sine=frequency=700:sample_rate=48000", "-t", "1",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "35", "-pix_fmt", "yuv420p",
+        "-ac", "2", "-c:a", "aac", "-b:a", "64k", str(out),
+    ])
+
+
+def _no_color_tags(out: Path) -> None:
+    """Fläche RGB (200, 50, 50), als bt709 kodiert, aber ohne Farbangaben (wie WhatsApp)."""
+    run_ffmpeg([
+        "-f", "lavfi", "-i", "color=c=0xC83232:size=320x180:rate=30:duration=1",
+        "-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p",
+        "-c:v", "libx264", "-preset", "veryfast",
+        # 2 = "nicht angegeben" für Primärfarben, Kennlinie und Matrix
+        "-bsf:v", "h264_metadata=colour_primaries=2:transfer_characteristics=2:"
+                  "matrix_coefficients=2",
+        str(out),
+    ])
+
+
+def _live_photo_still(out: Path) -> None:
+    """HEIC wie vom iPhone: Kennung des Live Photos in der Apple-MakerNote."""
+    img = Image.new("RGB", (400, 300), (40, 120, 200))
+    exif = Image.Exif()
+    sub = exif.get_ifd(EXIF_IFD)
+    sub[EXIF_DATETIME_ORIGINAL] = "2026:09:12 15:20:00"
+    sub[EXIF_MAKER_NOTE] = b"Apple iOS\x00\x00\x01MM" + LIVE_PHOTO_ID.encode("ascii")
+    from pillow_heif import register_heif_opener
+
+    register_heif_opener()
+    img.save(out, "HEIF", quality=60, exif=exif.tobytes())
+
+
+def _live_photo_video(out: Path) -> None:
+    run_ffmpeg([
+        "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30", "-t", "1.5",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "35", "-pix_fmt", "yuv420p",
+        "-metadata", f"com.apple.quicktime.content.identifier={LIVE_PHOTO_ID}",
+        "-movflags", "use_metadata_tags+faststart", str(out),
+    ])
+
+
 def _music(out: Path, seconds: float, base: int) -> None:
     # Einfache Tonfolge: alle 0,5 s ein neuer Halbton
     expr = (f"0.25*sin(2*PI*t*{base}*pow(2\\,floor(mod(t*2\\,8))/12))"
@@ -133,6 +235,19 @@ MEDIA: dict[str, Callable[[Path], None]] = {
     "HDR Hochkant PQ.mp4": lambda p: _hdr_video(p, (1280, 720), 2, "smpte2084", 90),
     "HDR HLG.mp4": lambda p: _hdr_video(p, (1280, 720), 2, "arib-std-b67"),
     "VFR Blitz Ton.mp4": lambda p: _vfr_sync(p),
+    "HEVC SDR 8 Bit.mp4": lambda p: _hevc_sdr(p, 8),
+    "HEVC SDR 10 Bit.mp4": lambda p: _hevc_sdr(p, 10),
+    "HDR10plus.mp4": _hdr10plus,
+    "iPhone HLG.mov": lambda p: _hdr_video(p, (640, 360), 2, "arib-std-b67"),
+    "Drehung 90.mp4": lambda p: _rotated(p, 90),
+    "Drehung 180.mp4": lambda p: _rotated(p, 180),
+    "Drehung 270.mp4": lambda p: _rotated(p, 270),
+    "60 fps.mp4": lambda p: _high_fps(p, 60),
+    "120 fps.mp4": lambda p: _high_fps(p, 120),
+    "240 fps.mp4": lambda p: _high_fps(p, 240),
+    "Ohne Farbangaben.mp4": _no_color_tags,
+    "Live Photo.heic": _live_photo_still,
+    "Live Photo.mov": _live_photo_video,
     "Musik 1 – Frühling.mp3": lambda p: _music(p, 12, 330),
     "Musik 2 – Sommer.m4a": lambda p: _music(p, 9, 392),
 }

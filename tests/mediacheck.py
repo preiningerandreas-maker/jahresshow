@@ -93,3 +93,41 @@ def remux_with_date(src: Path, out: Path, creation_time: str | None) -> Path:
         args += ["-metadata", f"creation_time={creation_time}"]
     run_ffmpeg([*args, str(out)])
     return out
+
+
+def assert_working_format(path: Path) -> tuple[dict, dict | None]:
+    """Arbeitsformat bzw. Endvideo: H.264 yuv420p, 30 fps CFR, bt709 ausdrücklich gesetzt."""
+    v, a = streams(path)
+    assert v["codec_name"] == "h264"
+    assert v["pix_fmt"] == "yuv420p"
+    assert v["r_frame_rate"] == "30/1"
+    assert v["avg_frame_rate"] == "30/1"
+    assert int(v["height"]) <= 1080
+    assert v.get("color_transfer") == "bt709"
+    assert v.get("color_primaries") == "bt709"
+    assert v.get("color_space") == "bt709"
+    assert not any("rotation" in sd for sd in v.get("side_data_list", []))
+    if a is not None:
+        assert a["codec_name"] == "aac"
+        assert a["sample_rate"] == "48000"
+    return v, a
+
+
+def mean_rgb(path: Path, *, matrix: str = "bt709", at: float = 0.5) -> tuple[float, float, float]:
+    """Mittlere Farbe eines Bildes, dekodiert mit der angegebenen Farbmatrix."""
+    raw = _raw(["-ss", f"{at:.3f}", "-i", str(path), "-frames:v", "1",
+                # erst in voller Größe nach RGB, dann verkleinern: beides in einem Schritt
+                # liefert bei swscale abweichende Farben
+                "-vf", f"scale=in_color_matrix={matrix}:in_range=tv,format=rgb24,"
+                       "scale=8:8:flags=area",
+                "-f", "rawvideo"])
+    n = len(raw) // 3
+    return tuple(sum(raw[c::3]) / n for c in range(3))  # type: ignore[return-value]
+
+
+def pixel_rgb(path: Path, x: float, y: float) -> tuple[int, int, int]:
+    """Farbe an relativer Position (0..1) im ersten Bild, nach automatischer Drehung."""
+    raw = _raw(["-i", str(path), "-frames:v", "1", "-vf", "scale=16:16,format=rgb24",
+                "-f", "rawvideo"])
+    i = (min(15, int(y * 16)) * 16 + min(15, int(x * 16))) * 3
+    return raw[i], raw[i + 1], raw[i + 2]

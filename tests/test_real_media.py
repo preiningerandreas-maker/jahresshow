@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 from conftest import REAL_MEDIA
-from mediacheck import streams, video_pts
+from mediacheck import assert_working_format, ffprobe, streams, video_pts
 from PIL import Image
 
 from slideshow.core.chapters import build_items, is_chapter_title
@@ -34,6 +34,21 @@ def _real(exts: set[str]) -> list[Path]:
 REAL_VIDEOS = _real(VIDEO_EXTS)
 REAL_HEIC = _real({".heic", ".heif"})
 REAL_PHOTOS = _real(PHOTO_EXTS)
+
+
+def _dolby_vision(paths: list[Path]) -> list[Path]:
+    """Videos mit Dolby-Vision-Konfiguration (Erkennung nur über ffprobe-Metadaten)."""
+    found = []
+    for p in paths:
+        try:
+            if video_info(p).dovi_profile is not None:
+                found.append(p)
+        except Exception:  # noqa: BLE001 - defekte Datei: hier nur nicht mitzählen
+            continue
+    return found
+
+
+REAL_DOLBY_VISION = _dolby_vision(REAL_VIDEOS)
 # Höchstens 12 Fotos für die teureren Einzeltests, gleichmäßig verteilt
 SAMPLE_PHOTOS = REAL_PHOTOS[:: max(1, len(REAL_PHOTOS) // 12)][:12]
 
@@ -104,3 +119,21 @@ def test_real_video_normalized(src: Path, tmp_path: Path) -> None:
         assert a is not None and a["sample_rate"] == "48000"
         assert abs(float(v["start_time"]) - float(a["start_time"])) < 0.05
         assert abs(float(v["duration"]) - float(a["duration"])) < 0.05
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("src", REAL_DOLBY_VISION, ids=_ids(REAL_DOLBY_VISION))
+def test_real_dolby_vision_as_hlg(src: Path, tmp_path: Path) -> None:
+    """iPhone Dolby Vision 8.4: Basisschicht HLG tonemappen, DV-Metadaten verwerfen.
+    Wird übersprungen, solange keine DV-Datei in tests/media/real/ liegt."""
+    info = video_info(src)
+    if (info.dovi_profile, info.dovi_compat) != (8, 4):
+        pytest.skip(f"Dolby Vision {info.dovi_profile}.{info.dovi_compat}, erwartet 8.4")
+    assert info.transfer == "arib-std-b67" and info.hdr
+    out = normalize_video(src, tmp_path)
+    v, _ = assert_working_format(out)
+    assert not any("dv_profile" in sd for sd in v.get("side_data_list", []))
+    frames = ffprobe(out, "-select_streams", "v:0", "-read_intervals", "%+#3",
+                     "-show_frames").get("frames", [])
+    assert not any("Dolby" in sd.get("side_data_type", "")
+                   for f in frames for sd in f.get("side_data_list", []))
