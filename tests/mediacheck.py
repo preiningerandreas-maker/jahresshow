@@ -1,0 +1,95 @@
+"""Hilfen für Tests: Fotos mit EXIF erzeugen, ffprobe auswerten, Bild/Ton roh dekodieren."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+
+from PIL import Image
+
+from slideshow.core.ffmpeg import CREATIONFLAGS, ffmpeg_path, ffprobe_path, run_ffmpeg
+
+EXIF_IFD = 0x8769
+RED = (220, 30, 30)
+BLUE = (30, 30, 220)
+
+
+def make_jpeg(path: Path, *, date: str | None = None, orientation: int = 1,
+              size: tuple[int, int] = (200, 100), fmt: str = "JPEG") -> Path:
+    """Linke Hälfte rot, rechte Hälfte blau – so lässt sich die Drehung prüfen."""
+    w, h = size
+    img = Image.new("RGB", size, BLUE)
+    img.paste(RED, (0, 0, w // 2, h))
+    exif = Image.Exif()
+    exif[0x0112] = orientation
+    if date:
+        exif.get_ifd(EXIF_IFD)[0x9003] = date
+    if fmt == "HEIF":
+        from pillow_heif import register_heif_opener
+
+        register_heif_opener()
+        img.save(path, "HEIF", quality=90, exif=exif.tobytes())
+    else:
+        img.save(path, fmt, quality=95, exif=exif.tobytes())
+    return path
+
+
+def ffprobe(path: Path, *extra: str) -> dict:
+    cmd = [str(ffprobe_path()), "-v", "error", "-print_format", "json", "-show_format",
+           "-show_streams", *extra, str(path)]
+    res = subprocess.run(cmd, capture_output=True, encoding="utf-8", check=True,
+                         creationflags=CREATIONFLAGS)
+    return json.loads(res.stdout)
+
+
+def streams(path: Path) -> tuple[dict, dict | None]:
+    data = ffprobe(path)
+    v = next(s for s in data["streams"] if s["codec_type"] == "video")
+    a = next((s for s in data["streams"] if s["codec_type"] == "audio"), None)
+    return v, a
+
+
+def video_pts(path: Path) -> list[float]:
+    """Zeitstempel aller Videobilder laut ffprobe."""
+    data = ffprobe(path, "-select_streams", "v:0", "-show_entries", "packet=pts_time")
+    return sorted(float(p["pts_time"]) for p in data["packets"])
+
+
+def _raw(args: list[str]) -> bytes:
+    cmd = [str(ffmpeg_path()), "-v", "error", "-nostdin", *args, "pipe:1"]
+    return subprocess.run(cmd, capture_output=True, check=True,
+                          creationflags=CREATIONFLAGS).stdout
+
+
+def first_bright_frame_time(path: Path, fps: int = 30) -> float:
+    """Zeitpunkt des ersten hellen Bildes (Blitz) in einem CFR-Video."""
+    raw = _raw(["-i", str(path), "-vf", "scale=8:8,format=gray", "-f", "rawvideo"])
+    n = 64
+    for i in range(len(raw) // n):
+        if sum(raw[i * n:(i + 1) * n]) / n > 128:
+            return i / fps
+    raise AssertionError("Kein heller Bildabschnitt gefunden")
+
+
+def first_loud_sample_time(path: Path, rate: int = 48000) -> float:
+    raw = _raw(["-i", str(path), "-map", "0:a:0", "-ac", "1", "-ar", str(rate),
+                "-f", "s16le"])
+    for i in range(0, len(raw) - 1, 2):
+        if abs(int.from_bytes(raw[i:i + 2], "little", signed=True)) > 1000:
+            return (i // 2) / rate
+    raise AssertionError("Kein Ton gefunden")
+
+
+def mean_luma(path: Path) -> float:
+    raw = _raw(["-i", str(path), "-frames:v", "1", "-vf", "scale=32:32,format=gray",
+                "-f", "rawvideo"])
+    return sum(raw) / len(raw)
+
+
+def remux_with_date(src: Path, out: Path, creation_time: str | None) -> Path:
+    args = ["-i", str(src), "-map", "0", "-c", "copy", "-map_metadata", "-1"]
+    if creation_time:
+        args += ["-metadata", f"creation_time={creation_time}"]
+    run_ffmpeg([*args, str(out)])
+    return out

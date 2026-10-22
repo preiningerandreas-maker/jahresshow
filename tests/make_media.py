@@ -69,6 +69,43 @@ def _video(out: Path, size: tuple[int, int], seconds: float, *, audio: bool = Tr
     run_ffmpeg(args)
 
 
+def _hdr_video(out: Path, size: tuple[int, int], seconds: float, transfer: str,
+               rotation: int = 0) -> None:
+    """HEVC 10 Bit HDR wie vom Samsung S23 (PQ = smpte2084, HLG = arib-std-b67)."""
+    w, h = size
+    tmp = out.with_suffix(".tmp.mp4")
+    run_ffmpeg([
+        "-f", "lavfi", "-i", f"testsrc2=size={w}x{h}:rate=30",
+        "-f", "lavfi", "-i", "sine=frequency=500:sample_rate=48000",
+        "-t", str(seconds),
+        "-vf", f"zscale=pin=bt709:tin=bt709:min=bt709:rin=tv:p=bt2020:t={transfer}:"
+               "m=bt2020nc:r=tv:npl=100,format=yuv420p10le",
+        "-c:v", "libx265", "-preset", "ultrafast", "-crf", "30",
+        "-x265-params", f"log-level=error:colorprim=bt2020:transfer={transfer}:"
+                        "colormatrix=bt2020nc",
+        "-color_primaries", "bt2020", "-color_trc", transfer, "-colorspace", "bt2020nc",
+        "-tag:v", "hvc1", "-ac", "2", "-c:a", "aac", "-b:a", "96k", str(tmp),
+    ])
+    # Hochkant-Handyvideos speichern quer und setzen nur eine Drehung in den Metadaten
+    run_ffmpeg(["-display_rotation", str(rotation), "-i", str(tmp), "-c", "copy",
+                "-movflags", "+faststart", str(out)])
+    tmp.unlink()
+
+
+def _vfr_sync(out: Path, seconds: float = 4) -> None:
+    """VFR-Video: weißer Blitz und Piepton gleichzeitig bei 2,0–2,2 s, sonst schwarz/still."""
+    run_ffmpeg([
+        "-f", "lavfi", "-i", f"color=c=black:size=640x360:rate=60:duration={seconds}",
+        "-f", "lavfi", "-i", f"sine=frequency=1000:sample_rate=48000:duration={seconds}",
+        "-vf", "drawbox=x=0:y=0:w=iw:h=ih:color=white:t=fill:enable='between(t,2,2.2)',"
+               "select='not(mod(n\\,3))+not(mod(n\\,7))',format=yuv420p",
+        "-fps_mode", "vfr",
+        "-af", "volume=volume=0:enable='not(between(t,2,2.2))'",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
+        "-ac", "2", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", str(out),
+    ])
+
+
 def _music(out: Path, seconds: float, base: int) -> None:
     # Einfache Tonfolge: alle 0,5 s ein neuer Halbton
     expr = (f"0.25*sin(2*PI*t*{base}*pow(2\\,floor(mod(t*2\\,8))/12))"
@@ -93,6 +130,9 @@ MEDIA: dict[str, Callable[[Path], None]] = {
     "Video mit Ton.mp4": lambda p: _video(p, (1920, 1080), 6),
     "Hochkant Video.mp4": lambda p: _video(p, (1080, 1920), 4, freq=660),
     "VFR Handy.mp4": lambda p: _video(p, (1280, 720), 5, vfr=True, freq=550),
+    "HDR Hochkant PQ.mp4": lambda p: _hdr_video(p, (1280, 720), 2, "smpte2084", 90),
+    "HDR HLG.mp4": lambda p: _hdr_video(p, (1280, 720), 2, "arib-std-b67"),
+    "VFR Blitz Ton.mp4": lambda p: _vfr_sync(p),
     "Musik 1 – Frühling.mp3": lambda p: _music(p, 12, 330),
     "Musik 2 – Sommer.m4a": lambda p: _music(p, 9, 392),
 }
