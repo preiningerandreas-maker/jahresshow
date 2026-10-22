@@ -5,7 +5,10 @@ bleibt."""
 from __future__ import annotations
 
 import logging
+import os
+import sys
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
@@ -26,6 +29,9 @@ from slideshow.render.cache import (
 )
 
 log = logging.getLogger(__name__)
+
+SYNCHRONIZE = 0x00100000  # Windows: Recht, auf das Ende eines Prozesses zu warten
+INFINITE = 0xFFFFFFFF
 
 THUMB_SIZE = 320  # längere Kante in Pixeln
 THUMB_VERSION = 1
@@ -82,6 +88,28 @@ def _warm_up() -> None:
     """Nichts tun: lädt im Hilfsprozess nur die Module."""
 
 
+def _exit_with_parent(parent_pid: int) -> None:
+    """Hilfsprozess beendet sich, sobald das Hauptprogramm weg ist. Beim normalen Schließen
+    räumt das Programm selbst auf; nach einem Absturz oder Beenden per Task-Manager blieben
+    die Hilfsprozesse sonst liegen und belegen Speicher."""
+
+    def watch() -> None:
+        if sys.platform == "win32":
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(SYNCHRONIZE, False, parent_pid)
+            if not handle:  # schon beendet
+                os._exit(0)
+            kernel32.WaitForSingleObject(handle, INFINITE)
+        else:
+            while os.getppid() == parent_pid:
+                time.sleep(1)
+        os._exit(0)
+
+    threading.Thread(target=watch, name="parent-watch", daemon=True).start()
+
+
 class ThumbProcessPool:
     """Vorschaubilder in eigenen Prozessen erzeugen. Fotos zu öffnen ist viel Python-Code
     (Pillow); in Threads würde das die Oberfläche über den GIL ausbremsen."""
@@ -97,7 +125,9 @@ class ThumbProcessPool:
     def _get_pool(self) -> ProcessPoolExecutor:
         with self._lock:
             if self._pool is None:
-                self._pool = ProcessPoolExecutor(max_workers=self._workers)
+                self._pool = ProcessPoolExecutor(max_workers=self._workers,
+                                                 initializer=_exit_with_parent,
+                                                 initargs=(os.getpid(),))
             return self._pool
 
     def start(self) -> None:
