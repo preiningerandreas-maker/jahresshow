@@ -42,7 +42,7 @@ Das Endvideo hat immer explizit gesetzte Farbmetadaten bt709 (color_primaries, c
 Animationen, Ken Burns, Collagen, Rahmen, Beat-Sync, DVD, Cloud, Mehrsprachigkeit.
 
 ## Stack
-- Python 3.12, PySide6, Pillow, pillow-heif, pytest, ruff
+- Python 3.12.10 (wie in `.venv`), PySide6, Pillow, pillow-heif, pytest, pytest-qt, ruff
 - FFmpeg/ffprobe als externe Binaries in `bin/` (gyan.dev full build, nicht im Git)
 - Verpackung: PyInstaller **onedir**, ffmpeg.exe und ffprobe.exe im Ausgabeordner
 
