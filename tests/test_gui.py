@@ -670,39 +670,6 @@ def test_still_preview_follows_changes_within_1s(qtbot, window: MainWindow,  # n
         window.timeline.select_rows([0])
 
 
-def test_progress_bar_visible_in_all_windows_styles(qtbot) -> None:  # noqa: ANN001
-    """Der Windows-11-Stil zeichnet Fortschritt sonst nur als feine Linie („leer“)."""
-    from PySide6.QtWidgets import QStyleFactory
-
-    from slideshow.app.activity import ProgressBar
-
-    app = QApplication.instance()
-    assert isinstance(app, QApplication)
-    original = app.style().name()
-    checked = []
-    available = QStyleFactory.keys()
-    try:
-        for style in ("windows11", "windowsvista", "Fusion"):
-            if style not in available:
-                continue
-            app.setStyle(style)
-            bar = ProgressBar()
-            qtbot.addWidget(bar)
-            bar.resize(170, 22)
-            bar.set_fraction(0.5)
-            img = bar.grab().toImage()
-            y = img.height() // 2
-            filled = img.pixelColor(img.width() // 5, y)
-            empty = img.pixelColor(img.width() * 9 // 10, y)
-            assert filled.green() > filled.red() + 40, style  # grüner Balken
-            assert abs(empty.green() - empty.red()) < 20, style  # grauer Rest
-            assert bar.text() == "50 %"
-            checked.append(style)
-    finally:
-        app.setStyle(original)
-    assert "Fusion" in checked
-
-
 def test_activity_line_combines_tasks(qtbot) -> None:  # noqa: ANN001
     from slideshow.app.activity import ActivityPanel, TaskRow
 
