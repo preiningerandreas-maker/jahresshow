@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "name": "Demo Jahresrückblick 2026",
+  "settings": {
+    "photo_duration": 4.0,
+    "transition": "fade",
+    "transition_duration": 1.0,
+    "resolution": "1080p"
+  },
+  "music": {
+    "tracks": [
+      "media/synthetic/Musik 1 – Frühling.mp3",
+      "media/synthetic/Musik 2 – Sommer.m4a"
+    ],
+    "volume": 1.0,
+    "duck_volume": 0.25,
+    "fade_out": 3.0
+  },
+  "items": [
+    {
+      "kind": "title",
+      "duration": 4.0,
+      "background": "#1E2A3A",
+      "text": {
+        "text": "Jahresrückblick 2026\nGrüße aus Kärnten",
+        "position": "center",
+        "size": 110,
+        "bold": true,
+        "bar": false
+      }
+    },
+    {
+      "kind": "photo",
+      "path": "media/synthetic/Querformat Wörthersee.jpg",
+      "duration": 4.0,
+      "fit": "blur",
+      "transition": "fade",
+      "text": {
+        "text": "Sommerurlaub am Wörthersee – schöne Grüße!",
+        "position": "bottom",
+        "size": 56,
+        "color": "#FFFFFF",
+        "bar": true,
+        "bar_opacity": 0.5
+      }
+    },
+    {
+      "kind": "photo",
+      "path": "media/synthetic/Hochkant Größe.jpg",
+      "duration": 4.0,
+      "fit": "blur",
+      "transition": "fade",
+      "text": {
+        "text": "Größter Spaß: Äpfel, Öfen & Übermut – ß",
+        "position": "top",
+        "size": 56,
+        "color": "#FFE08A",
+        "bar": true,
+        "bar_opacity": 0.45
+      }
+    },
+    {
+      "kind": "video",
+      "path": "media/synthetic/Video mit Ton.mp4",
+      "fit": "blur",
+      "transition": "fade",
+      "audio": true,
+      "text": {
+        "text": "Video mit Originalton",
+        "position": "bottom",
+        "size": 48
+      }
+    },
+    {
+      "kind": "video",
+      "path": "media/synthetic/Hochkant Video.mp4",
+      "duration": 4.0,
+      "fit": "blur",
+      "transition": "fadeblack"
+    }
+  ]
+}

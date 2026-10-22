@@ -22,6 +22,22 @@ Schlankes Windows-Programm, das aus Fotos und Videos eine Slideshow mit eigener 
 11. Vorschau eines gewählten Abschnitts in 480p
 12. Export MP4
 
+## Unterstützte Quellen (handyunabhängig)
+Erkennung immer über Metadaten (ffprobe/EXIF), nie über Marke, Modell oder Dateinamen.
+- H.264 8 Bit SDR (ältere Android, WhatsApp): direkt normalisieren
+- HEVC 8/10 Bit SDR (aktuelle Handys ohne HDR): 10 Bit auf 8 Bit, bt709
+- HEVC SDR mit bt2020-Primärfarben (manche Handys ohne HDR): per zscale Farbraum nach bt709 umrechnen, ohne Tonemapping
+- HDR10/HDR10+ (PQ, smpte2084, Samsung): Tonemapping nach bt709
+- HLG (arib-std-b67, Pixel, manche Android): Tonemapping nach bt709
+- Dolby Vision Profil 8.4 (iPhone): als HLG behandeln, DV-Metadaten ignorieren
+- Drehung nur in Metadaten (rotate/displaymatrix, alle Handys): korrekt drehen
+- Hohe Bildraten 60/120/240 fps und VFR: auf 30 fps CFR
+- MOV-Container (iPhone): wie MP4
+- JPG, HEIC/HEIF, PNG: EXIF-Drehung und Datum
+- Live Photos (iPhone HEIC+MOV) und Motion Photos (Samsung JPG mit Video): V1 nur Standbild
+- Fehlende Farbmetadaten (WhatsApp, Bearbeitungs-Apps): als bt709 annehmen
+Das Endvideo hat immer explizit gesetzte Farbmetadaten bt709 (color_primaries, color_transfer, color_space).
+
 ## Nicht-Ziele V1
 Animationen, Ken Burns, Collagen, Rahmen, Beat-Sync, DVD, Cloud, Mehrsprachigkeit.
 
@@ -63,7 +79,7 @@ Beim Start Probe-Encode (1 s testsrc) in dieser Reihenfolge: `h264_nvenc`, `h264
 Jedes Video einmalig in Arbeitsformat umwandeln: 1080p (Höhe max. 1080), 30 fps CFR (VFR-Handyvideos sonst asynchron), SDR yuv420p H.264, Audio AAC 48 kHz. HDR (bt2020/smpte2084/arib-std-b67) per zscale + tonemap=hable nach bt709. Hardware-Dekodierung wenn verfügbar, sonst CPU. Fortschritt in der GUI anzeigen.
 
 ### Blur-Fill
-Hintergrund: Quelle auf 1/8 verkleinern, boxblur, auf 1920×1080 füllend skalieren und beschneiden, Helligkeit -0.15. Vordergrund: Original auf Höhe 1080, zentriert darüber. Gilt für Fotos und Videos.
+Hintergrund: Quelle auf 1/16 verkleinern, boxblur, auf 1920×1080 füllend skalieren und beschneiden, Helligkeit -0.15. Vordergrund: Original auf Höhe 1080, zentriert darüber. Gilt für Fotos und Videos.
 
 ### Text
 Text mit Pillow als transparentes PNG rendern, per overlay einblenden. Kein drawtext (Font-Pfade unter Windows). Schrift mitliefern (Noto Sans oder Inter, OFL-Lizenz), Umlaute und ß müssen funktionieren.
