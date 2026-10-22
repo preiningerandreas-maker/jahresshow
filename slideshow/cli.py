@@ -1,5 +1,7 @@
 """Kommandozeile:
 
+python -m slideshow                      Oberfläche starten
+python -m slideshow gui [dateien ...]    Oberfläche mit Projekt oder Fotos/Videos starten
 python -m slideshow render <projekt.json> [-o out.mp4] [--encoder X] [--preview]
 """
 
@@ -95,9 +97,19 @@ def cmd_encoders(ns: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_gui(ns: argparse.Namespace) -> int:
+    from slideshow.app.main import run_gui
+
+    return run_gui(ns.files)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="slideshow", description="Jahresshow – Slideshow als MP4")
-    sub = p.add_subparsers(dest="command", required=True)
+    sub = p.add_subparsers(dest="command")
+
+    g = sub.add_parser("gui", help="Oberfläche starten (Standard)")
+    g.add_argument("files", nargs="*", help="Projektdatei oder Fotos/Videos zum Öffnen")
+    g.set_defaults(func=cmd_gui)
 
     r = sub.add_parser("render", help="Projekt als MP4 ausgeben")
     r.add_argument("project", help="Projektdatei (.json)")
@@ -120,5 +132,6 @@ def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    ns = build_parser().parse_args(argv)
+    args = sys.argv[1:] if argv is None else argv
+    ns = build_parser().parse_args(args or ["gui"])
     return int(ns.func(ns))
