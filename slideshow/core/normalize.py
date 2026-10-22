@@ -60,6 +60,21 @@ class NormalizeProgress:
 
 NormalizeCallback = Callable[[NormalizeProgress], None]
 
+# Je Zieldatei nur eine Umwandlung gleichzeitig; ein zweiter Aufruf (z. B. Render-Lauf neben
+# der Hintergrund-Umwandlung) wartet und bekommt danach die fertige Datei aus dem Cache
+_locks: dict[Path, threading.Lock] = {}
+_locks_guard = threading.Lock()
+
+
+def _lock_for(final: Path) -> threading.Lock:
+    with _locks_guard:
+        return _locks.setdefault(final, threading.Lock())
+
+
+def is_running(src: Path, cache_dir: Path | None = None) -> bool:
+    """Wird dieses Video gerade umgewandelt?"""
+    return _lock_for(normalized_path(src, cache_dir)).locked()
+
 
 _TO_BT709_YUV = "zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
 
@@ -161,10 +176,27 @@ def normalize_video(
     progress: NormalizeCallback | None = None,
     cancel: threading.Event | None = None,
 ) -> Path:
-    """Wandelt ein Video ins Arbeitsformat um oder liefert die Datei aus dem Cache."""
+    """Wandelt ein Video ins Arbeitsformat um oder liefert die Datei aus dem Cache.
+    Läuft die Umwandlung schon in einem anderen Thread, wird auf deren Ergebnis gewartet."""
     final = normalized_path(src, cache_dir)
     if final.is_file():
         return final
+    lock = _lock_for(final)
+    while not lock.acquire(timeout=0.2):
+        if cancel is not None and cancel.is_set():
+            raise Cancelled()
+    try:
+        if final.is_file():  # inzwischen von der laufenden Umwandlung fertig
+            return final
+        return _normalize(src, final, encoder=encoder, hwaccel=hwaccel, progress=progress,
+                          cancel=cancel)
+    finally:
+        lock.release()
+
+
+def _normalize(src: Path, final: Path, *, encoder: str, hwaccel: bool,
+               progress: NormalizeCallback | None,
+               cancel: threading.Event | None) -> Path:
     final.parent.mkdir(parents=True, exist_ok=True)
     info = video_info(src)
     start = time.monotonic()

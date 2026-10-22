@@ -10,11 +10,13 @@ import wave
 from pathlib import Path
 
 import pytest
-from mediacheck import yuv_at
+from mediacheck import assert_working_format, pixel_rgb, yuv_at
 
 from slideshow.cli import main as cli_main
+from slideshow.core import normalize
 from slideshow.core.ffmpeg import Cancelled, probe, run_ffmpeg
-from slideshow.core.importer import clip_length
+from slideshow.core.importer import clip_length, video_info
+from slideshow.core.normalize import BackgroundNormalizer, cached_normalized
 from slideshow.core.project import FPS, Item, Music, Project, Settings, TextOverlay
 from slideshow.render import assemble
 from slideshow.render.assemble import RenderError, RenderOptions, render_project
@@ -254,3 +256,99 @@ def test_text_overlay_colors_bt709(synthetic: Path, umlaut_dir: Path) -> None:
         got = yuv_at(out, 0.1, 0.5, at=i + 0.5)
         assert all(abs(g - e) <= 2 for g, e in zip(got, expected, strict=True)), (
             item.kind, item.text.color, got, expected)
+
+
+# --- Rendern nie mit Original-Videos (außer 480p-Vorschau) --------------------------------
+
+
+def _hdr_project(synthetic: Path, umlaut_dir: Path, name: str = "HDR Hochkant PQ.mp4"
+                 ) -> tuple[Project, Path]:
+    _copy_media(synthetic, umlaut_dir, name)
+    return Project(items=[Item("video", path=name)], base_dir=umlaut_dir), umlaut_dir / name
+
+
+def test_export_normalizes_hdr_video_without_cache(synthetic: Path, umlaut_dir: Path) -> None:
+    """HDR-Video ohne Cache direkt exportieren: Endvideo ist bt709 und tonemapped."""
+    project, src = _hdr_project(synthetic, umlaut_dir)
+    cache = umlaut_dir / "cache"
+    assert video_info(src).hdr and cached_normalized(src, cache) is None
+    messages: list[str] = []
+    out = umlaut_dir / "HDR Export Ü.mp4"
+    result = render_project(project, RenderOptions(out, encoder="libx264", cache_dir=cache),
+                            status=lambda m, _f: messages.append(m))
+    assert result.videos_normalized == 1 and result.notes == []
+    assert any("wird umgewandelt" in m for m in messages)
+    normalized = cached_normalized(src, cache)
+    assert normalized is not None
+
+    v, _ = assert_working_format(out)
+    assert v["color_transfer"] not in ("smpte2084", "arib-std-b67")
+    assert not video_info(out).hdr
+    # Bildinhalt wie die tonemappte Fassung (Mitte des hochkant zentrierten Bildes) …
+    ref = pixel_rgb(normalized, 0.5, 0.5)
+    got = pixel_rgb(out, 0.5, 0.5)
+    assert all(abs(a - b) <= 12 for a, b in zip(got, ref, strict=True)), (got, ref)
+    # … und nicht wie das Original ohne Tonemapping
+    raw = pixel_rgb(src, 0.5, 0.5)
+    assert any(abs(a - b) > 30 for a, b in zip(got, raw, strict=True)), (got, raw)
+
+
+def test_preview_may_use_original_with_note(synthetic: Path, umlaut_dir: Path) -> None:
+    project, src = _hdr_project(synthetic, umlaut_dir)
+    cache = umlaut_dir / "cache"
+    result = render_project(project, RenderOptions(umlaut_dir / "Vorschau.mp4", preview=True,
+                                                   cache_dir=cache))
+    assert result.videos_normalized == 0
+    assert len(result.notes) == 1 and src.name in result.notes[0]
+    assert cached_normalized(src, cache) is None
+
+
+def test_render_waits_for_running_normalization(synthetic: Path, umlaut_dir: Path,
+                                                monkeypatch: pytest.MonkeyPatch) -> None:
+    """Läuft die Umwandlung schon im Hintergrund, wartet der Export statt doppelt zu rechnen."""
+    project, src = _hdr_project(synthetic, umlaut_dir, "HDR HLG.mp4")
+    cache = umlaut_dir / "cache"
+    started = threading.Event()
+    gate = threading.Event()  # hält die Hintergrund-Umwandlung an, bis der Export wartet
+    calls: list[Path] = []
+    real = normalize._normalize
+
+    def slow(src_: Path, final: Path, **kw):  # type: ignore[no-untyped-def]
+        calls.append(src_)
+        started.set()
+        assert gate.wait(30)
+        return real(src_, final, **kw)
+
+    monkeypatch.setattr(normalize, "_normalize", slow)
+    worker = BackgroundNormalizer(cache)
+    worker.submit([src])
+    assert started.wait(30)
+    assert normalize.is_running(src, cache)
+    messages: list[str] = []
+
+    def status(msg: str, _frac: float) -> None:
+        messages.append(msg)
+        if "wartet" in msg:
+            gate.set()
+
+    try:
+        result = render_project(project, RenderOptions(umlaut_dir / "Warten.mp4",
+                                                       encoder="libx264", cache_dir=cache),
+                                status=status)
+    finally:
+        gate.set()
+    worker.wait()
+    worker.close()
+    assert calls == [src]  # nur einmal umgewandelt
+    assert any("wartet auf laufende Umwandlung" in m for m in messages)
+    assert result.notes == []
+    assert_working_format(umlaut_dir / "Warten.mp4")
+
+
+def test_segment_never_uses_original(synthetic: Path, umlaut_dir: Path) -> None:
+    """Auch direkt aufgerufen holt render_segment die fehlende Umwandlung nach."""
+    project, src = _hdr_project(synthetic, umlaut_dir, "HDR HLG.mp4")
+    cfg = RenderConfig(1920, 1080, "libx264", umlaut_dir / "cache")
+    entry = project.timeline(clip_length)[0]
+    render_segment(project, entry, cfg)
+    assert cached_normalized(src, cfg.cache_dir) is not None

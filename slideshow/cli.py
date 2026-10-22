@@ -76,6 +76,8 @@ def cmd_render(ns: argparse.Namespace) -> int:
 
     for w in result.warnings:
         print(f"WARNUNG: {w}")
+    for n in result.notes:
+        print(f"HINWEIS: {n}")
     print(f"Kodierer: {result.encoder} ({LABELS.get(result.encoder, '')})")
     print(f"Segmente: {result.segments_total} (aus Cache: {result.segments_cached}), "
           f"Abschnitte: {result.blocks_total} (aus Cache: {result.blocks_cached})")

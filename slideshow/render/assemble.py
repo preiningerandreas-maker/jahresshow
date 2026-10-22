@@ -8,6 +8,8 @@ Summe(Segmentlängen) - Summe(Übergänge)."""
 
 from __future__ import annotations
 
+import logging
+import math
 import shutil
 import threading
 import time
@@ -17,6 +19,12 @@ from pathlib import Path
 
 from slideshow.core.ffmpeg import Cancelled, run_ffmpeg
 from slideshow.core.importer import clip_length
+from slideshow.core.normalize import (
+    NormalizeProgress,
+    cached_normalized,
+    is_running,
+    normalize_video,
+)
 from slideshow.core.project import FPS, PREVIEW_SIZE, RESOLUTIONS, Project, TimelineEntry
 from slideshow.render.audio import build_music, duck_ranges
 from slideshow.render.cache import (
@@ -27,6 +35,8 @@ from slideshow.render.cache import (
 )
 from slideshow.render.encoder import bitrates, detect_encoder, encoder_args
 from slideshow.render.segment import SAMPLES_PER_FRAME, RenderConfig, render_segment
+
+log = logging.getLogger(__name__)
 
 MAX_BLOCK = 20
 AUDIO_BITRATE = 192_000
@@ -150,6 +160,8 @@ class RenderResult:
     blocks_cached: int = 0
     seconds: float = 0.0
     warnings: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)  # Hinweise, keine Fehler
+    videos_normalized: int = 0  # im Render-Lauf umgewandelte Videos
 
     @property
     def duration(self) -> float:
@@ -217,7 +229,7 @@ def render_project(
     else:
         width, height = RESOLUTIONS[project.settings.resolution]
         encoder = detect_encoder(cache_dir, opts.encoder)
-    cfg = RenderConfig(width, height, encoder, cache_dir)
+    cfg = RenderConfig(width, height, encoder, cache_dir, allow_original=opts.preview)
 
     timeline = project.timeline(clip_length)
     total = timeline[-1].start_frame + timeline[-1].frames
@@ -229,14 +241,52 @@ def render_project(
             "USB-Stick mit FAT32."
         )
 
-    # Fortschritt grob gewichtet: Segmente 45 %, Blöcke 45 %, Ton und Ausgabe 10 %
-    def report(msg: str, frac: float) -> None:
+    def emit(msg: str, frac: float) -> None:
         if status:
             status(msg, min(1.0, max(0.0, frac)))
 
     def check_cancel() -> None:
         if cancel is not None and cancel.is_set():
             raise Cancelled()
+
+    # Videos ohne Umwandlung im Cache: Export wandelt sie zuerst selbst um, die Vorschau
+    # nimmt das Original und vermerkt das
+    missing: list[Path] = []
+    for path in dict.fromkeys(e.item.path for e in timeline if e.item.kind == "video"):
+        assert path is not None
+        src = project.resolve(path)
+        if src not in missing and cached_normalized(src, cache_dir) is None:
+            missing.append(src)
+    if opts.preview:
+        for src in missing:
+            note = (f"Vorschau verwendet das Original von „{src.name}“, weil es noch nicht "
+                    "umgewandelt ist. Farben und Bildrate können im Export abweichen.")
+            log.info(note)
+            result.notes.append(note)
+        missing = []
+
+    # Fortschritt grob gewichtet: Umwandeln 30 % (falls nötig), danach Segmente 45 %,
+    # Blöcke 45 %, Ton und Ausgabe 10 % vom Rest
+    norm_share = 0.3 if missing else 0.0
+
+    def report(msg: str, frac: float) -> None:
+        emit(msg, norm_share + (1 - norm_share) * frac)
+
+    for k, src in enumerate(missing):
+        check_cancel()
+        label = f"Video {k + 1} von {len(missing)} wird umgewandelt: {src.name}"
+        if is_running(src, cache_dir):
+            emit(f"{label} (wartet auf laufende Umwandlung)", norm_share * k / len(missing))
+
+        def norm_progress(p: NormalizeProgress, k: int = k, label: str = label) -> None:
+            # Restzeit in ganzen Minuten, damit die Meldung nicht ständig wechselt
+            eta = f" (noch ca. {math.ceil(p.eta / 60)} min)" if p.eta is not None else ""
+            emit(f"{label}{eta}",
+                 norm_share * (k + p.fraction) / len(missing))
+
+        emit(label, norm_share * k / len(missing))
+        normalize_video(src, cache_dir, encoder=encoder, progress=norm_progress, cancel=cancel)
+        result.videos_normalized += 1
 
     seg_paths: dict[int, Path] = {}
     done = 0

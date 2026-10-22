@@ -11,7 +11,7 @@ from PIL import Image
 
 from slideshow.core.ffmpeg import ProgressCallback, run_ffmpeg
 from slideshow.core.importer import open_photo, video_info
-from slideshow.core.normalize import cached_normalized, to_bt709_scale
+from slideshow.core.normalize import cached_normalized, normalize_video, to_bt709_scale
 from slideshow.core.project import FPS, Item, Project, TimelineEntry
 from slideshow.render.cache import cleanup_tmp, file_fingerprint, make_key, tmp_path
 from slideshow.render.encoder import encoder_args
@@ -27,6 +27,8 @@ class RenderConfig:
     height: int
     encoder: str
     cache_dir: Path
+    # Nur 480p-Vorschau: Original verwenden, wenn die Umwandlung noch fehlt
+    allow_original: bool = False
 
     @property
     def segment_dir(self) -> Path:
@@ -126,6 +128,12 @@ def render_segment(
     cancel: threading.Event | None = None,
 ) -> tuple[Path, bool]:
     """Rendert ein Segment oder holt es aus dem Cache. Rückgabe: (Pfad, aus_cache)."""
+    item = entry.item
+    if item.kind == "video" and not cfg.allow_original:
+        assert item.path is not None
+        # Nie das Original: fehlt die Umwandlung, jetzt nachholen (oder auf sie warten)
+        normalize_video(project.resolve(item.path), cfg.cache_dir, encoder=cfg.encoder,
+                        cancel=cancel)
     key = segment_key(project, entry, cfg)
     final = cfg.segment_dir / f"{key}.mp4"
     if final.is_file():
@@ -133,7 +141,6 @@ def render_segment(
     cfg.segment_dir.mkdir(parents=True, exist_ok=True)
     cfg.work_dir.mkdir(parents=True, exist_ok=True)
 
-    item = entry.item
     n = entry.frames
     seconds = f"{n / FPS:.6f}"
     samples = n * SAMPLES_PER_FRAME
@@ -149,7 +156,7 @@ def render_segment(
 
     if item.kind == "video":
         assert item.path is not None
-        # Umgewandelte Fassung (30 fps CFR, SDR) verwenden, sobald sie im Cache liegt
+        # Umgewandelte Fassung (30 fps CFR, SDR); das Original nur in der Vorschau
         orig = project.resolve(item.path)
         src = cached_normalized(orig, cfg.cache_dir) or orig
         info = video_info(src)
