@@ -146,9 +146,14 @@ def clip_length(path: Path) -> float:
 # --- Fotos -------------------------------------------------------------------
 
 
-def open_photo(path: Path) -> Image.Image:
-    """Foto (auch HEIC) laden und EXIF-Drehung anwenden. Ergebnis ist RGB."""
+def open_photo(path: Path, draft: tuple[int, int] | None = None) -> Image.Image:
+    """Foto (auch HEIC) laden und EXIF-Drehung anwenden. Ergebnis ist RGB.
+    draft: JPEG verkleinert dekodieren, mindestens so groß, dass (b, h) bedeckt bleibt."""
     with Image.open(path) as im:
+        if draft is not None:
+            w, h = draft
+            side = max(w, h)  # Drehung erst danach bekannt: beide Seiten abdecken
+            im.draft("RGB", (side, side))
         img = ImageOps.exif_transpose(im)
         return img.convert("RGB")
 
