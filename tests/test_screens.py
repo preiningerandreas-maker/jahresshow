@@ -39,16 +39,19 @@ def screen_project(synthetic: Path, tmp_path_factory: pytest.TempPathFactory) ->
     return target
 
 
+@pytest.mark.parametrize("style", ["windowsvista", "windows11"],
+                         ids=["win10-stil", "win11-stil"])
 @pytest.mark.parametrize(("width", "height", "scale"), [(1366, 768, 1.0), (1280, 720, 1.5)],
                          ids=["1366x768", "1920x1080-150pct"])
-def test_window_fits_without_clipped_controls(width: int, height: int, scale: float,
+def test_window_fits_without_clipped_controls(width: int, height: int, scale: float, style: str,
                                               screen_project: Path, tmp_path: Path) -> None:
     env = {k: v for k, v in os.environ.items() if k != "QT_QPA_PLATFORM"}
     env["PYTHONIOENCODING"] = "utf-8"
     res = subprocess.run(
         [sys.executable, "-m", "slideshow.app.screenshot", "--width", str(width),
          "--height", str(height), "--scale", str(scale), "--out", str(SCREENS),
-         "--project", str(screen_project), "--cache-dir", str(tmp_path / "cache")],
+         "--project", str(screen_project), "--cache-dir", str(tmp_path / "cache"),
+         "--style", style],
         cwd=ROOT, env=env, capture_output=True, encoding="utf-8", timeout=300, check=False)
     assert res.returncode == 0, res.stderr[-3000:]
     report = json.loads(res.stdout.strip().splitlines()[-1])
@@ -57,9 +60,11 @@ def test_window_fits_without_clipped_controls(width: int, height: int, scale: fl
     # Fenster hat genau die verfügbare Größe (nicht vergrößert, weil der Inhalt nicht passt)
     assert report["window"] == [width, height - TASKBAR_AND_TITLE]
     assert report["dpr"] == pytest.approx(scale)
+    assert report["style"] == style
     assert report["min_size"][0] <= width and report["min_size"][1] <= height - TASKBAR_AND_TITLE
     assert report["problems"] == [], "\n".join(report["problems"])
-    assert len(report["files"]) == 5
+    # Element (Foto, Video mit allen Aufgaben, aufgeklappt, Titel), Show, Musik, Zoom klein/groß
+    assert len(report["files"]) == 8
     for f in report["files"]:
         assert Path(f).is_file() and Path(f).stat().st_size > 10_000
 

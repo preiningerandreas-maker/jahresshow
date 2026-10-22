@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QDropEvent
+from PySide6.QtGui import QDropEvent, QImage
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from slideshow.app.mainwindow import ImportOutcome, MainWindow, export_summary
@@ -61,11 +61,11 @@ def window(qtbot, tmp_path: Path, opened: list[Path]):  # noqa: ANN001, ANN201
 def wait_import(qtbot, w: MainWindow, paths: list[Path], timeout: int = 60_000) -> None:  # noqa: ANN001
     task = w.import_paths(paths)
     assert task is not None
-    qtbot.waitUntil(lambda: not task.running and not w.import_row.isVisible(), timeout=timeout)
+    qtbot.waitUntil(lambda: not task.running and not w.import_row.active, timeout=timeout)
 
 
 def wait_render(qtbot, w: MainWindow, timeout: int = 180_000) -> None:  # noqa: ANN001
-    qtbot.waitUntil(lambda: not w.rendering and not w.render_row.isVisible(), timeout=timeout)
+    qtbot.waitUntil(lambda: not w.rendering and not w.render_row.active, timeout=timeout)
 
 
 def copy_media(synthetic: Path, target: Path, *names: str) -> list[Path]:
@@ -113,7 +113,8 @@ def test_import_sorts_adds_chapters_and_prepares_videos(qtbot, window: MainWindo
     assert window.dirty and window.windowTitle().startswith("*")
     # Video wird im Hintergrund umgewandelt, Fortschritt sichtbar, danach ausgeblendet
     qtbot.waitUntil(lambda: window.video_prep.pending == 0, timeout=120_000)
-    qtbot.waitUntil(lambda: not window.video_row.isVisible(), timeout=10_000)
+    qtbot.waitUntil(lambda: not window.video_row.active, timeout=10_000)
+    assert not window.activity.isVisible()  # Zeile verschwindet ohne Aktivität
     assert list((window.cache_dir / "normalized").glob("*.mp4"))
     assert not list(window.cache_dir.rglob("*.part*"))
 
@@ -121,12 +122,14 @@ def test_import_sorts_adds_chapters_and_prepares_videos(qtbot, window: MainWindo
 def test_video_progress_is_shown(qtbot, window: MainWindow, synthetic: Path,  # noqa: ANN001
                                  umlaut_dir: Path) -> None:
     seen: list[str] = []
-    window.video_prep.status.connect(lambda text, _f: seen.append(text))
+    fractions: list[float] = []
+    window.video_prep.status.connect(lambda text, f: (seen.append(text), fractions.append(f)))
     copy_media(synthetic, umlaut_dir, "VFR Handy.mp4")
     wait_import(qtbot, window, [umlaut_dir])
     qtbot.waitUntil(lambda: window.video_prep.pending == 0, timeout=120_000)
     assert any("1 von 1" in s and "„VFR Handy.mp4“" in s for s in seen)
-    assert any("%" in s for s in seen)
+    assert all("–" not in s and "—" not in s for s in seen)
+    assert any(f > 0 for f in fractions)  # Balken bekommt echte Werte
 
 
 def test_duplicates_are_reported_not_silently_removed(qtbot, window: MainWindow,  # noqa: ANN001
@@ -385,14 +388,19 @@ def test_export_start_and_cancel(qtbot, window: MainWindow, synthetic: Path,  # 
     out = umlaut_dir / "Show Ö.mp4"
     task = window.export_to(out, confirm=False)
     assert task is not None and window.rendering
-    assert window.render_row.isVisible()
+    assert window.render_row.active and window.activity.isVisible()
     assert not window.act_export.isEnabled() and not window.act_preview.isEnabled()
     qtbot.waitUntil(lambda: window.render_row.bar.value() > 0, timeout=60_000)
     # Oberfläche bleibt bedienbar, während im Hintergrund gerendert wird
     photo = next(i for i, it in enumerate(window.project.items) if it.kind == "photo")
     window.timeline.select_rows([photo])
     assert window.item_panel.header.text().startswith("Foto")
-    qtbot.mouseClick(window.render_row.cancel_button, Qt.MouseButton.LeftButton)
+    # Fortschritt ist im Balken sichtbar, Statustext ohne Gedankenstrich
+    assert window.activity.bar.value() > 0
+    assert window.activity.bar.text().endswith("%")
+    assert "–" not in window.activity.summary.text()
+    assert window.activity.primary is window.render_row
+    qtbot.mouseClick(window.activity.cancel_button, Qt.MouseButton.LeftButton)
     wait_render(qtbot, window, timeout=30_000)
     assert window.last_result is None
     assert not out.exists()
@@ -563,24 +571,29 @@ def test_timeline_with_1000_items_stays_responsive(qtbot, window: MainWindow,  #
     load_ms = (time.perf_counter() - started) * 1000
     assert window.model.rowCount() == 1000 + 12  # mit Zwischentiteln
 
+    from slideshow.app.timeline import ZOOM_DEFAULT, ZOOM_MIN
+
     view = window.timeline
     bar = view.verticalScrollBar()
-    assert bar.maximum() > 0
-    timings = []
-    positions = [round(bar.maximum() * k / 30) for k in range(31)]
-    positions += positions[::-1][::3]
-    for pos in positions:
-        t0 = time.perf_counter()
-        bar.setValue(pos)
-        view.viewport().repaint()  # synchron zeichnen, wie beim echten Scrollen
-        QApplication.processEvents()
-        timings.append((time.perf_counter() - t0) * 1000)
-        qtbot.wait(5)  # Vorschaubilder kommen währenddessen im Hintergrund
-    worst = max(timings)
-    print(f"\nLaden {load_ms:.0f} ms, Scrollen Median {statistics.median(timings):.1f} ms, "
-          f"Maximum {worst:.1f} ms")
-    assert worst < 100, f"Scroll-Reaktion zu langsam: {worst:.0f} ms"
     assert load_ms < 1000
+    for zoom in (ZOOM_DEFAULT, ZOOM_MIN):  # kleinste Größe: die meisten Kacheln sichtbar
+        window.zoom.setValue(zoom)
+        QApplication.processEvents()
+        assert bar.maximum() > 0
+        timings = []
+        positions = [round(bar.maximum() * k / 30) for k in range(31)]
+        positions += positions[::-1][::3]
+        for pos in positions:
+            t0 = time.perf_counter()
+            bar.setValue(pos)
+            view.viewport().repaint()  # synchron zeichnen, wie beim echten Scrollen
+            QApplication.processEvents()
+            timings.append((time.perf_counter() - t0) * 1000)
+            qtbot.wait(5)  # Vorschaubilder kommen währenddessen im Hintergrund
+        worst = max(timings)
+        print(f"\nKachelbreite {zoom}: Laden {load_ms:.0f} ms, Scrollen Median "
+              f"{statistics.median(timings):.1f} ms, Maximum {worst:.1f} ms")
+        assert worst < 100, f"Scroll-Reaktion zu langsam: {worst:.0f} ms (Breite {zoom})"
 
     # Nach dem Scrollen erscheinen die Vorschaubilder der sichtbaren Kacheln
     visible = [r for r in range(window.model.rowCount())
@@ -596,3 +609,223 @@ def test_timeline_with_1000_items_stays_responsive(qtbot, window: MainWindow,  #
     QApplication.processEvents()
     move_ms = (time.perf_counter() - t0) * 1000
     assert move_ms < 500, f"Verschieben zu langsam: {move_ms:.0f} ms"
+
+
+# --- Abnahme-Rückmeldung: Standbild, Fortschritt, Aktivitätszeile, Kacheln, Zoom, Texte -----
+
+
+def still_image(window: MainWindow) -> QImage:
+    assert window.still.pixmap is not None
+    return window.still.pixmap.toImage()
+
+
+def rgb(img: QImage, x: int, y: int) -> tuple[int, int, int]:
+    c = img.pixelColor(x, y)
+    return c.red(), c.green(), c.blue()
+
+
+@pytest.mark.slow
+def test_still_preview_follows_changes_within_1s(qtbot, window: MainWindow,  # noqa: ANN001
+                                                 synthetic: Path, umlaut_dir: Path) -> None:
+    (portrait,) = copy_media(synthetic, umlaut_dir, "Hochkant Größe.jpg")
+    p = Project(items=[Item("photo", path=str(portrait))], base_dir=umlaut_dir)
+    window.set_project(p, None)
+    assert window.still.pixmap is None and "Kein Element" in window.still.message
+    with qtbot.waitSignal(window.still.updated, timeout=10_000):
+        window.timeline.select_rows([0])
+    img = still_image(window)
+    assert (img.width(), img.height()) == (640, 360)
+    assert sum(rgb(img, 4, 180)) > 30  # unscharfer Hintergrund statt schwarzer Rand
+
+    panel = window.item_panel
+    timings = []
+
+    def change(action) -> QImage:  # noqa: ANN001
+        t0 = time.perf_counter()
+        with qtbot.waitSignal(window.still.updated, timeout=1000):  # innerhalb 1 s
+            action()
+        timings.append(time.perf_counter() - t0)
+        return still_image(window)
+
+    img = change(lambda: panel.fit.setCurrentIndex(panel.fit.findData("black")))
+    assert max(rgb(img, 4, 180)) < 20  # schwarze Ränder links und rechts
+    img = change(lambda: panel.fit.setCurrentIndex(panel.fit.findData("crop")))
+    assert sum(rgb(img, 4, 180)) > 150  # Bild füllt bis zum Rand
+    assert window.model.tile(0).fit == "crop"  # Kachel zeigt denselben Modus
+
+    def red_text() -> None:
+        panel.bar_color.set_color("#FF0000")
+        panel.bar_color.colorChanged.emit("#FF0000")
+        panel.bar_opacity.setValue(100)
+        panel.text.setPlainText("Grüße aus Kärnten")
+
+    img = change(red_text)
+    bottom = [rgb(img, x, y) for x in (8, 320, 632) for y in range(270, 356, 4)]
+    assert any(r > 200 and g < 60 and b < 60 for r, g, b in bottom)  # roter Textbalken
+    print(f"\nStandbild nach Änderung: {', '.join(f'{t * 1000:.0f} ms' for t in timings)}")
+
+    # Erneutes Anwählen zeigt das Bild aus dem Cache sofort wieder
+    window.timeline.select_rows([])
+    with qtbot.waitSignal(window.still.updated, timeout=1000):
+        window.timeline.select_rows([0])
+
+
+def test_progress_bar_visible_in_all_windows_styles(qtbot) -> None:  # noqa: ANN001
+    """Der Windows-11-Stil zeichnet Fortschritt sonst nur als feine Linie („leer“)."""
+    from PySide6.QtWidgets import QStyleFactory
+
+    from slideshow.app.activity import ProgressBar
+
+    app = QApplication.instance()
+    assert isinstance(app, QApplication)
+    original = app.style().name()
+    checked = []
+    available = QStyleFactory.keys()
+    try:
+        for style in ("windows11", "windowsvista", "Fusion"):
+            if style not in available:
+                continue
+            app.setStyle(style)
+            bar = ProgressBar()
+            qtbot.addWidget(bar)
+            bar.resize(170, 22)
+            bar.set_fraction(0.5)
+            img = bar.grab().toImage()
+            y = img.height() // 2
+            filled = img.pixelColor(img.width() // 5, y)
+            empty = img.pixelColor(img.width() * 9 // 10, y)
+            assert filled.green() > filled.red() + 40, style  # grüner Balken
+            assert abs(empty.green() - empty.red()) < 20, style  # grauer Rest
+            assert bar.text() == "50 %"
+            checked.append(style)
+    finally:
+        app.setStyle(original)
+    assert "Fusion" in checked
+
+
+def test_activity_line_combines_tasks(qtbot) -> None:  # noqa: ANN001
+    from slideshow.app.activity import ActivityPanel, TaskRow
+
+    panel = ActivityPanel()
+    qtbot.addWidget(panel)
+    render = panel.add_row(TaskRow("r", "Video erstellen", 3))
+    imp = panel.add_row(TaskRow("i", "Einlesen", 2))
+    video = panel.add_row(TaskRow("v", "Videos umwandeln", 1))
+    assert not panel.isVisible()  # nur bei Aktivität
+
+    cancelled: list[str] = []
+    video.start("Videos werden für die Show umgewandelt: 1 von 3", lambda: cancelled.append("v"))
+    assert panel.isVisible() and panel.primary is video
+    assert not panel.toggle.isVisible()  # eine Aufgabe: nichts aufzuklappen
+    video.update_progress(video.text, 0.25)
+    assert panel.bar.value() == 250
+
+    render.start("Video wird erstellt", lambda: cancelled.append("r"))
+    imp.start("Fotos und Videos werden eingelesen: 3 von 9", None)
+    assert panel.primary is render  # wichtigste Aufgabe vorn
+    assert "außerdem: Einlesen, Videos umwandeln" in panel.summary.text()
+    assert panel.toggle.isVisible() and panel.toggle.text() == "Details (3)"
+    assert not any(r.isVisible() for r in (render, imp, video))  # zugeklappt: eine Zeile
+    panel.set_expanded(True)
+    assert all(r.isVisible() for r in (render, imp, video))
+    assert not imp.cancel_button.isVisible()  # ohne Abbruchmöglichkeit kein Knopf
+
+    panel.cancel_button.click()  # bricht die vorne stehende Aufgabe ab
+    assert cancelled == ["r"]
+    render.finish()
+    assert panel.primary is imp and "außerdem: Videos umwandeln" in panel.summary.text()
+    imp.finish()
+    video.finish()
+    assert not panel.isVisible()
+
+
+def test_tiles_show_fit_mode(qtbot) -> None:  # noqa: ANN001
+    from PySide6.QtCore import QRect
+    from PySide6.QtGui import QColor, QPainter, QPixmap
+
+    from slideshow.app.timeline import paint_fit
+
+    portrait = QPixmap(50, 100)
+    portrait.fill(QColor("#E03030"))
+
+    def tile(fit: str) -> QImage:
+        img = QImage(160, 90, QImage.Format.Format_RGB32)
+        img.fill(QColor("#FFFFFF"))
+        p = QPainter(img)
+        small = portrait.scaledToWidth(12)
+        paint_fit(p, QRect(0, 0, 160, 90), portrait, fit, lambda: small)
+        p.end()
+        return img
+
+    left = {fit: rgb(tile(fit), 3, 45) for fit in ("black", "crop", "blur")}
+    centre = {fit: rgb(tile(fit), 80, 45) for fit in ("black", "crop", "blur")}
+    assert left["black"] == (0, 0, 0)  # schwarze Ränder
+    assert left["crop"][0] > 200  # füllt den Rahmen
+    r, g, _b = left["blur"]
+    assert 120 < r < left["crop"][0] and g < 60  # abgedunkelter Hintergrund aus dem Bild
+    assert all(c[0] > 200 for c in centre.values())  # Bild selbst immer in der Mitte
+
+
+def test_tile_follows_fit_change(window: MainWindow, synthetic: Path, umlaut_dir: Path) -> None:
+    window.set_project(photos_project(synthetic, umlaut_dir), None)
+    row = next(i for i, it in enumerate(window.project.items) if it.kind == "photo")
+    assert window.model.tile(row).fit == "blur"
+    window.timeline.select_rows([row])
+    window.item_panel.fit.setCurrentIndex(window.item_panel.fit.findData("black"))
+    assert window.model.tile(row).fit == "black"
+
+
+def test_zoom_slider_and_ctrl_wheel(qtbot, window: MainWindow, synthetic: Path,  # noqa: ANN001
+                                    umlaut_dir: Path) -> None:
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QWheelEvent
+
+    from slideshow.app.timeline import ZOOM_MAX, ZOOM_MIN
+
+    window.set_project(photos_project(synthetic, umlaut_dir), None)
+    view = window.timeline
+    model = window.model
+    before = view.visualRect(model.index(0)).width()
+    window.zoom.setValue(ZOOM_MAX)
+    assert view.tile_width == ZOOM_MAX
+    assert view.visualRect(model.index(0)).width() > before
+    window.zoom.setValue(ZOOM_MIN)
+    assert view.visualRect(model.index(0)).width() < before
+
+    def wheel(delta: int) -> None:
+        pos = QPointF(view.viewport().rect().center())
+        ev = QWheelEvent(pos, view.viewport().mapToGlobal(pos), QPoint(0, 0), QPoint(0, delta),
+                         Qt.MouseButton.NoButton, Qt.KeyboardModifier.ControlModifier,
+                         Qt.ScrollPhase.NoScrollPhase, False)
+        view.wheelEvent(ev)
+
+    wheel(120)
+    assert view.tile_width == ZOOM_MIN + 16 and window.zoom.value() == ZOOM_MIN + 16
+    wheel(-120)
+    wheel(-120)
+    assert view.tile_width == ZOOM_MIN  # nicht kleiner als das Minimum
+
+
+def test_status_texts_without_dashes(qtbot, window: MainWindow, synthetic: Path,  # noqa: ANN001
+                                     umlaut_dir: Path) -> None:
+    from slideshow.core.normalize import NormalizeProgress
+
+    p = photos_project(synthetic, umlaut_dir)
+    p.items[1].duration = 5 * 3600.0
+    window.set_project(p, None)
+    window.music_panel.add_tracks([synthetic / "Musik 1 – Frühling.mp3"])
+    qtbot.waitUntil(lambda: "4 GB" in window.summary_label.text(), timeout=10_000)
+    photos = [i for i, it in enumerate(window.project.items) if it.kind == "photo"]
+    window.timeline.select_rows(photos[:2])
+    texts = [window.summary_label.text(), window.music_panel.summary.text(),
+             window.item_panel.header.text()]
+    seen: list[str] = []
+    window.video_prep.status.connect(lambda t, _f: seen.append(t))
+    window.video_prep._total = 3
+    window.video_prep._emit_status(umlaut_dir / "Clip.mp4", NormalizeProgress(5, 10, 300))
+    texts += seen
+    assert seen and "noch ca." in seen[0]
+    for t in texts:
+        # Musiktitel dürfen Gedankenstriche enthalten, die Meldung selbst nicht
+        t = t.replace("Musik 1 – Frühling", "")
+        assert "–" not in t and "—" not in t, t

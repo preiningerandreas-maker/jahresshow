@@ -18,6 +18,7 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 TASKBAR_AND_TITLE = 80  # logische Pixel: Taskleiste (48) und Fenstertitel (ca. 32)
@@ -41,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--project")
     ap.add_argument("--cache-dir")
+    ap.add_argument("--style", help="Qt-Stil, z. B. windows11 (T490s) oder windowsvista (T450s)")
     ns = ap.parse_args(argv)
 
     native = native_scale()
@@ -53,8 +55,11 @@ def main(argv: list[str] | None = None) -> int:
     from slideshow.app.layoutcheck import clipped_widgets
     from slideshow.app.main import _translate
     from slideshow.app.mainwindow import MainWindow
+    from slideshow.app.timeline import ZOOM_MAX, ZOOM_MIN
 
     app = QApplication([])
+    if ns.style:
+        app.setStyle(ns.style)
     _translate(app)
     cache = Path(ns.cache_dir) if ns.cache_dir else None
     win = MainWindow(cache_dir=cache, encoder="libx264", open_file=lambda _p: None)
@@ -80,9 +85,12 @@ def main(argv: list[str] | None = None) -> int:
     out = Path(ns.out)
     out.mkdir(parents=True, exist_ok=True)
     tag = f"{ns.width}x{ns.height}@{round(ns.scale * 100)}"
+    if ns.style:
+        tag += f"-{ns.style}"
     report: dict = {"screen": [ns.width, ns.height], "scale": ns.scale,
                     "window": [win.width(), win.height()],
-                    "dpr": win.devicePixelRatioF(), "min_size": [
+                    "dpr": win.devicePixelRatioF(), "style": app.style().name(),
+                    "min_size": [
                         win.minimumSizeHint().width(), win.minimumSizeHint().height()],
                     "states": {}, "files": []}
 
@@ -96,17 +104,29 @@ def main(argv: list[str] | None = None) -> int:
             "3 Foto(s) und Video(s) hinzugefügt, nach Aufnahmedatum einsortiert.\n"
             "1 doppelte Datei ist in der Zeitleiste mit „doppelt“ markiert.", "warning")
         win.import_row.start("Fotos und Videos werden eingelesen: 120 von 400", lambda: None)
-        win.video_row.start("Videos werden für die Show vorbereitet (umgewandelt) – 2 von 7: "
-                            "„20260714_101500.mp4“ – 43 %, noch ca. 12 min", lambda: None)
-        win.render_row.start("Video wird erstellt: Element 12 von 240 wird vorbereitet – 4 %",
+        win.video_row.start("Videos werden für die Show umgewandelt: 2 von 7 "
+                            "(„20260714_101500.mp4“), dieses Video noch ca. 12 min", lambda: None)
+        win.video_row.update_progress(win.video_row.text, 0.2)
+        win.render_row.start("Video wird erstellt: Element 12 von 240 wird vorbereitet",
                              lambda: None)
+        win.render_row.update_progress(win.render_row.text, 0.43)
+        win.import_row.update_progress(win.import_row.text, 0.3)
+
+    def expanded() -> None:
+        win.activity.set_expanded(True)
+
+    def zoom(width: int) -> Callable[[], None]:
+        return lambda: win.timeline.set_tile_width(width)
 
     states = [
         ("element-foto", 0, first_of["photo"], None),
         ("element-video", 0, first_of["video"], busy),
+        ("aktivitaet-details", 0, first_of["video"], expanded),
         ("element-titel", 0, first_of["title"], None),
         ("show", 1, None, None),
         ("musik", 2, None, None),
+        ("zoom-klein", 0, first_of["photo"], zoom(ZOOM_MIN)),
+        ("zoom-gross", 0, first_of["photo"], zoom(ZOOM_MAX)),
     ]
     for name, tab, row, setup in states:
         if row is not None:
@@ -115,6 +135,10 @@ def main(argv: list[str] | None = None) -> int:
             setup()
         win.tabs.setCurrentIndex(tab)
         settle()
+        end = time.monotonic() + 20
+        while (win.still.pending or not win.thumbs.idle()) and time.monotonic() < end:
+            settle(0.05)
+        settle(0.2)
         problems = clipped_widgets(win)
         file = out / f"{tag}-{name}.png"
         win.grab().save(str(file))
