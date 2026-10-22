@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
+# GUI-Tests ohne sichtbare Fenster; die Screenshot-Tests starten eigene Prozesse mit der
+# echten Windows-Darstellung
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 

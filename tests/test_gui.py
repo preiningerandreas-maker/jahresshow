@@ -1,0 +1,598 @@
+"""Oberfläche mit pytest-qt: Import, Duplikate, Laden/Speichern, Reihenfolge per Drag & Drop,
+Kapitel, Eigenschaften, Musik, Vorschau-Hinweis, Export starten/abbrechen, Größenwarnung,
+eine Instanz, Zeitleiste mit 1000 Elementen."""
+
+from __future__ import annotations
+
+import os
+import shutil
+import statistics
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import pytest
+from PIL import Image
+from PySide6.QtCore import QPoint, Qt
+from PySide6.QtGui import QDropEvent
+from PySide6.QtWidgets import QApplication, QMessageBox
+
+from slideshow.app.mainwindow import ImportOutcome, MainWindow, export_summary
+from slideshow.app.single import KEY_ENV, SingleInstance
+from slideshow.core.chapters import is_chapter_title
+from slideshow.core.project import Item, Project, TextOverlay
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def no_dialogs(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Modale Dialoge würden den Test blockieren: mitschreiben und Standard wählen."""
+    shown: list[str] = []
+
+    def record(*args: object, **_kw: object) -> QMessageBox.StandardButton:
+        shown.append(" ".join(str(a) for a in args[1:3]))
+        return QMessageBox.StandardButton.No
+
+    for name in ("warning", "information", "question", "critical"):
+        monkeypatch.setattr(QMessageBox, name, staticmethod(record))
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: shown.append(self.text()) or 0)
+    return shown
+
+
+@pytest.fixture
+def opened() -> list[Path]:
+    return []
+
+
+@pytest.fixture
+def window(qtbot, tmp_path: Path, opened: list[Path]):  # noqa: ANN001, ANN201
+    w = MainWindow(cache_dir=tmp_path / "cache", encoder="libx264", open_file=opened.append)
+    w.ask_duplicates = lambda outcome: False  # type: ignore[method-assign]
+    qtbot.addWidget(w)
+    w.resize(1280, 700)
+    w.show()
+    yield w
+    w.dirty = False
+    w.shutdown()
+
+
+def wait_import(qtbot, w: MainWindow, paths: list[Path], timeout: int = 60_000) -> None:  # noqa: ANN001
+    task = w.import_paths(paths)
+    assert task is not None
+    qtbot.waitUntil(lambda: not task.running and not w.import_row.isVisible(), timeout=timeout)
+
+
+def wait_render(qtbot, w: MainWindow, timeout: int = 180_000) -> None:  # noqa: ANN001
+    qtbot.waitUntil(lambda: not w.rendering and not w.render_row.isVisible(), timeout=timeout)
+
+
+def copy_media(synthetic: Path, target: Path, *names: str) -> list[Path]:
+    out = []
+    for n in names:
+        shutil.copy2(synthetic / n, target / n)
+        out.append(target / n)
+    return out
+
+
+def photos_project(synthetic: Path, folder: Path) -> Project:
+    """Fotos aus drei Monaten, Zeiten und Pfade fest vorgegeben."""
+    a, b = copy_media(synthetic, folder, "Querformat Wörthersee.jpg", "Hochkant Größe.jpg")
+    items = [
+        Item("title", duration=2.0, text=TextOverlay("Jahr 2026", position="center")),
+        Item("photo", path=str(a), taken="2026-03-01T10:00:00"),
+        Item("photo", path=str(b), taken="2026-03-02T10:00:00"),
+        Item("photo", path=str(a), taken="2026-05-01T10:00:00"),
+        Item("photo", path=str(b), taken="2026-07-01T10:00:00"),
+    ]
+    return Project(name="Urlaub Wörthersee 2026", items=items, base_dir=folder)
+
+
+def kinds(w: MainWindow) -> list[str]:
+    return [("chapter:" + (it.chapter or "")) if is_chapter_title(it) else
+            (it.taken or it.kind) for it in w.project.items]
+
+
+# --- Import ------------------------------------------------------------------------------
+
+
+def test_import_sorts_adds_chapters_and_prepares_videos(qtbot, window: MainWindow,  # noqa: ANN001
+                                                        synthetic: Path, umlaut_dir: Path) -> None:
+    files = copy_media(synthetic, umlaut_dir, "Querformat Wörthersee.jpg", "Hochkant Größe.jpg",
+                       "Winter Schnee.heic", "Video mit Ton.mp4")
+    wait_import(qtbot, window, [umlaut_dir])
+    items = window.project.items
+    assert items[0].kind == "title" and not is_chapter_title(items[0])  # Titelkarte vorn
+    media = [it for it in items if it.kind != "title"]
+    assert {Path(it.path or "").name for it in media} == {f.name for f in files}
+    taken = [it.taken for it in media]
+    assert taken == sorted(taken)  # nach Aufnahmedatum
+    assert any(is_chapter_title(it) for it in items)  # Zwischentitel pro Monat
+    assert window.notice.isVisible() and "hinzugefügt" in window.notice.label.text()
+    assert window.dirty and window.windowTitle().startswith("*")
+    # Video wird im Hintergrund umgewandelt, Fortschritt sichtbar, danach ausgeblendet
+    qtbot.waitUntil(lambda: window.video_prep.pending == 0, timeout=120_000)
+    qtbot.waitUntil(lambda: not window.video_row.isVisible(), timeout=10_000)
+    assert list((window.cache_dir / "normalized").glob("*.mp4"))
+    assert not list(window.cache_dir.rglob("*.part*"))
+
+
+def test_video_progress_is_shown(qtbot, window: MainWindow, synthetic: Path,  # noqa: ANN001
+                                 umlaut_dir: Path) -> None:
+    seen: list[str] = []
+    window.video_prep.status.connect(lambda text, _f: seen.append(text))
+    copy_media(synthetic, umlaut_dir, "VFR Handy.mp4")
+    wait_import(qtbot, window, [umlaut_dir])
+    qtbot.waitUntil(lambda: window.video_prep.pending == 0, timeout=120_000)
+    assert any("1 von 1" in s and "„VFR Handy.mp4“" in s for s in seen)
+    assert any("%" in s for s in seen)
+
+
+def test_duplicates_are_reported_not_silently_removed(qtbot, window: MainWindow,  # noqa: ANN001
+                                                      synthetic: Path, umlaut_dir: Path) -> None:
+    (a,) = copy_media(synthetic, umlaut_dir, "Querformat Wörthersee.jpg")
+    shutil.copy2(a, umlaut_dir / "Kopie.jpg")
+    asked: list[ImportOutcome] = []
+
+    def keep(outcome: ImportOutcome) -> bool:
+        asked.append(outcome)
+        return False  # alle übernehmen
+
+    window.ask_duplicates = keep  # type: ignore[method-assign]
+    wait_import(qtbot, window, [umlaut_dir])
+    assert len(asked) == 1 and len(asked[0].duplicates) == 1
+    media = [it for it in window.project.items if it.kind == "photo"]
+    assert len(media) == 2  # nichts stillschweigend entfernt
+    assert window.model.duplicates  # in der Zeitleiste als „doppelt“ markiert
+    assert "doppelt" in window.notice.label.text()
+
+    # Zweiter Import: identische Datei unter neuem Namen -> wird gemeldet und weggelassen
+    shutil.copy2(a, umlaut_dir / "Noch eine Kopie.jpg")
+    window.ask_duplicates = lambda outcome: (asked.append(outcome), True)[1]  # type: ignore
+    wait_import(qtbot, window, [umlaut_dir / "Noch eine Kopie.jpg", a])
+    assert len(asked) == 2
+    assert {d.name for d, _ in asked[1].duplicates} == {"Noch eine Kopie.jpg"}
+    assert len([it for it in window.project.items if it.kind == "photo"]) == 2
+    assert "schon im Projekt" in window.notice.label.text()
+
+
+# --- Laden und Speichern -----------------------------------------------------------------
+
+
+def test_save_and_load_roundtrip(qtbot, window: MainWindow, synthetic: Path,  # noqa: ANN001
+                                 umlaut_dir: Path, tmp_path: Path) -> None:
+    window.set_project(photos_project(synthetic, umlaut_dir), None)
+    window.timeline.select_rows([2])
+    panel = window.item_panel
+    panel.text.setPlainText("Grüße vom Wörthersee – ß")
+    panel.duration.setValue(6.5)
+    panel.fit.setCurrentIndex(panel.fit.findData("crop"))
+    panel.transition.setCurrentIndex(panel.transition.findData("wipeleft"))
+    window.music_panel.add_tracks([synthetic / "Musik 1 – Frühling.mp3"])
+    window.project_panel.photo_duration.setValue(3.0)
+    assert window.dirty
+
+    target = umlaut_dir / "Projekt Wörthersee.json"
+    window.save_to(target)
+    assert not window.dirty and window.windowTitle().startswith("Projekt Wörthersee.json")
+    data = target.read_text("utf-8")
+    assert "Grüße vom Wörthersee – ß" in data  # Umlaute lesbar gespeichert
+
+    other = MainWindow(cache_dir=tmp_path / "cache2", encoder="libx264")
+    qtbot.addWidget(other)
+    try:
+        other.load_from(target)
+        assert other.project.to_dict() == window.project.to_dict()
+        it = other.project.items[2]
+        assert (it.text and it.text.text) == "Grüße vom Wörthersee – ß"
+        assert (it.duration, it.fit, it.transition) == (6.5, "crop", "wipeleft")
+        assert other.project.settings.photo_duration == 3.0
+        assert other.music_panel.list.count() == 1
+        assert not other.dirty
+        other.timeline.select_rows([2])
+        assert other.item_panel.text.toPlainText() == "Grüße vom Wörthersee – ß"
+        other.item_panel.size.setValue(70)
+        assert other.dirty and other.windowTitle().startswith("*")
+    finally:
+        other.dirty = False
+        other.shutdown()
+
+
+def test_load_reports_missing_files(qtbot, window: MainWindow, synthetic: Path,  # noqa: ANN001
+                                    umlaut_dir: Path) -> None:
+    p = photos_project(synthetic, umlaut_dir)
+    target = umlaut_dir / "p.json"
+    p.save(target)
+    (umlaut_dir / "Hochkant Größe.jpg").unlink()
+    window.load_from(target)
+    assert window.notice.isVisible() and "nicht gefunden" in window.notice.label.text()
+
+
+# --- Reihenfolge und Kapitel --------------------------------------------------------------
+
+
+def drop_rows(w: MainWindow, rows: list[int], before_row: int) -> None:
+    """Wie Ziehen und Loslassen in der Zeitleiste: links auf die Kachel before_row."""
+    view = w.timeline
+    model = w.model
+    mime = model.mimeData([model.index(r) for r in rows])
+    if before_row >= model.rowCount():
+        last = view.visualRect(model.index(model.rowCount() - 1))
+        pos = QPoint(last.right() - 2, last.center().y())
+    else:
+        rect = view.visualRect(model.index(before_row))
+        pos = QPoint(rect.left() + 5, rect.center().y())
+    n = len(w.project.items) - sum(1 for it in w.project.items if is_chapter_title(it))
+    event = QDropEvent(pos.toPointF(), Qt.DropAction.MoveAction, mime,
+                       Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    view.dropEvent(event)
+    assert event.isAccepted()
+    # Nichts geht verloren oder wird verdoppelt
+    assert len(w.project.items) - sum(1 for it in w.project.items if is_chapter_title(it)) == n
+
+
+def test_reorder_by_drag_and_drop(qtbot, window: MainWindow, synthetic: Path,  # noqa: ANN001
+                                  umlaut_dir: Path) -> None:
+    window.set_project(photos_project(synthetic, umlaut_dir), None)
+    assert kinds(window) == ["title", "chapter:2026-03", "2026-03-01T10:00:00",
+                             "2026-03-02T10:00:00", "chapter:2026-05", "2026-05-01T10:00:00",
+                             "chapter:2026-07", "2026-07-01T10:00:00"]
+    qtbot.wait(50)
+    # Juli-Foto ganz nach vorn hinter die Titelkarte ziehen
+    drop_rows(window, [7], 1)
+    assert kinds(window) == ["title", "chapter:2026-07", "2026-07-01T10:00:00",
+                             "chapter:2026-03", "2026-03-01T10:00:00", "2026-03-02T10:00:00",
+                             "chapter:2026-05", "2026-05-01T10:00:00"]
+    assert window.timeline.selected_rows() == [2]  # verschobenes Element bleibt markiert
+    assert window.dirty
+
+    # Zwei markierte Elemente ans Ende ziehen
+    drop_rows(window, [4, 5], window.model.rowCount())
+    assert kinds(window)[-3:] == ["chapter:2026-03", "2026-03-01T10:00:00",
+                                  "2026-03-02T10:00:00"]
+    assert len(window.timeline.selected_rows()) == 2
+
+
+def test_reorder_without_chapters(qtbot, window: MainWindow, synthetic: Path,  # noqa: ANN001
+                                  umlaut_dir: Path) -> None:
+    window.set_project(photos_project(synthetic, umlaut_dir), None)
+    window.project_panel.chapters.setChecked(False)
+    assert kinds(window) == ["title", "2026-03-01T10:00:00", "2026-03-02T10:00:00",
+                             "2026-05-01T10:00:00", "2026-07-01T10:00:00"]
+    drop_rows(window, [1], 4)
+    assert kinds(window) == ["title", "2026-03-02T10:00:00", "2026-05-01T10:00:00",
+                             "2026-03-01T10:00:00", "2026-07-01T10:00:00"]
+
+
+def test_chapters_toggle_keeps_edited_titles(qtbot, window: MainWindow,  # noqa: ANN001
+                                             synthetic: Path, umlaut_dir: Path) -> None:
+    window.set_project(photos_project(synthetic, umlaut_dir), None)
+    row = next(i for i, it in enumerate(window.project.items) if it.chapter == "2026-05"
+               and is_chapter_title(it))
+    window.timeline.select_rows([row])
+    assert "Zwischentitel Mai 2026" in window.item_panel.header.text()
+    window.item_panel.text.setPlainText("Pfingsten am See")
+    window.item_panel.duration.setValue(2.0)
+
+    window.project_panel.chapters.setChecked(False)
+    assert not any(is_chapter_title(it) for it in window.project.items)
+    assert window.project.settings.chapters is False
+
+    window.project_panel.chapters.setChecked(True)
+    may = next(it for it in window.project.items if is_chapter_title(it)
+               and it.chapter == "2026-05")
+    assert may.text is not None and may.text.text == "Pfingsten am See"
+    assert may.duration == 2.0
+
+
+def test_title_card_and_item_properties(qtbot, window: MainWindow, synthetic: Path,  # noqa: ANN001
+                                        umlaut_dir: Path) -> None:
+    window.set_project(photos_project(synthetic, umlaut_dir), None)
+    panel = window.item_panel
+
+    # Titelkarte: Text auf Farbfläche, dann auf Foto
+    window.timeline.select_rows([0])
+    assert panel.title_box.isVisibleTo(window) and panel.header.text() == "Titelkarte"
+    panel.background.set_color("#336699")
+    panel.background.colorChanged.emit("#336699")
+    assert window.project.items[0].background == "#336699"
+    panel.set_background_photo(str(umlaut_dir / "Querformat Wörthersee.jpg"))
+    assert window.project.items[0].path is not None
+    assert "Querformat" in panel.bg_name.text()
+
+    # Neue Titelkarte vor dem markierten Element (vor dessen Monats-Zwischentitel)
+    photo_a = window.project.items[2]
+    window.timeline.select_rows([2])
+    window.add_title_card()
+    (row,) = window.timeline.selected_rows()
+    new_title = window.project.items[row]
+    assert new_title.kind == "title" and not is_chapter_title(new_title)
+    assert window.project.items.index(photo_a) > row
+
+    # Mehrere Fotos markieren: Änderung gilt für alle
+    photos = [i for i, it in enumerate(window.project.items) if it.kind == "photo"]
+    window.timeline.select_rows(photos)
+    assert "4 Elemente" in panel.header.text()
+    panel.duration.setValue(2.5)
+    panel.fit.setCurrentIndex(panel.fit.findData("black"))
+    panel.position.setCurrentIndex(panel.position.findData("top"))
+    panel.bar.setChecked(False)
+    for i in photos:
+        it = window.project.items[i]
+        assert (it.duration, it.fit) == (2.5, "black")
+        assert it.text is not None and (it.text.position, it.text.bar) == ("top", False)
+    # Kachel zeigt die neue Dauer
+    assert "2,5 s" in window.model.index(photos[0]).data(window.model.SubtitleRole)
+
+    # Entfernen
+    n = len(window.project.items)
+    window.timeline.select_rows([photos[0]])
+    window.remove_selected()
+    assert len(window.project.items) == n - 1
+
+
+def test_music_playlist(qtbot, window: MainWindow, synthetic: Path) -> None:  # noqa: ANN001
+    panel = window.music_panel
+    m1, m2 = synthetic / "Musik 1 – Frühling.mp3", synthetic / "Musik 2 – Sommer.m4a"
+    panel.add_tracks([m1, m2, synthetic / "Querformat Wörthersee.jpg"])  # Foto wird ignoriert
+    tracks = window.project.music.tracks
+    assert [Path(t).name for t in tracks] == [m1.name, m2.name]
+    assert "Musik insgesamt" in panel.summary.text()
+    panel.list.setCurrentRow(1)
+    panel.up_button.click()
+    assert [Path(t).name for t in window.project.music.tracks] == [m2.name, m1.name]
+    panel.duck.setValue(30)
+    panel.fade.setValue(5)
+    assert window.project.music.duck_volume == pytest.approx(0.3)
+    assert window.project.music.fade_out == 5.0
+    panel.list.setCurrentRow(0)
+    panel.list.item(0).setSelected(True)
+    panel.remove_button.click()
+    assert [Path(t).name for t in window.project.music.tracks] == [m1.name]
+    assert window.dirty
+
+
+# --- Export, Vorschau ---------------------------------------------------------------------
+
+
+def test_export_size_warning_over_4gb(qtbot, window: MainWindow, synthetic: Path,  # noqa: ANN001
+                                      umlaut_dir: Path, tmp_path: Path) -> None:
+    text, too_big = export_summary(600, "1080p")
+    assert not too_big and "MB" in text
+    text, too_big = export_summary(5 * 3600, "1080p")
+    assert too_big and "4 GB" in text and "FAT32" in text
+
+    p = photos_project(synthetic, umlaut_dir)
+    p.items[1].duration = 5 * 3600.0
+    window.set_project(p, None)
+    asked: list[tuple[str, bool]] = []
+    window.confirm_export = lambda t, big: (asked.append((t, big)), False)[1]  # type: ignore
+    assert window.export_to(tmp_path / "x.mp4") is None  # abgelehnt: kein Export
+    assert asked and asked[0][1] is True
+    assert not window.rendering
+    # Auch die Statuszeile warnt, sobald die Dauer berechnet ist
+    qtbot.waitUntil(lambda: "4 GB" in window.summary_label.text(), timeout=10_000)
+
+
+@pytest.mark.slow
+def test_export_start_and_cancel(qtbot, window: MainWindow, synthetic: Path,  # noqa: ANN001
+                                 umlaut_dir: Path) -> None:
+    p = photos_project(synthetic, umlaut_dir)
+    for it in p.items:
+        it.duration = 30.0  # lange genug, um mittendrin abzubrechen
+    window.set_project(p, None)
+    out = umlaut_dir / "Show Ö.mp4"
+    task = window.export_to(out, confirm=False)
+    assert task is not None and window.rendering
+    assert window.render_row.isVisible()
+    assert not window.act_export.isEnabled() and not window.act_preview.isEnabled()
+    qtbot.waitUntil(lambda: window.render_row.bar.value() > 0, timeout=60_000)
+    # Oberfläche bleibt bedienbar, während im Hintergrund gerendert wird
+    photo = next(i for i, it in enumerate(window.project.items) if it.kind == "photo")
+    window.timeline.select_rows([photo])
+    assert window.item_panel.header.text().startswith("Foto")
+    qtbot.mouseClick(window.render_row.cancel_button, Qt.MouseButton.LeftButton)
+    wait_render(qtbot, window, timeout=30_000)
+    assert window.last_result is None
+    assert not out.exists()
+    assert not list(umlaut_dir.glob("*.part*"))
+    assert "Abgebrochen" in window.notice.label.text()
+    assert window.act_export.isEnabled() and window.act_preview.isEnabled()
+
+
+@pytest.mark.slow
+def test_export_finishes(qtbot, window: MainWindow, synthetic: Path,  # noqa: ANN001
+                         umlaut_dir: Path) -> None:
+    p = photos_project(synthetic, umlaut_dir)
+    for it in p.items:
+        it.duration = 1.5
+    window.set_project(p, None)
+    out = umlaut_dir / "Fertig Ö.mp4"
+    assert window.export_to(out, confirm=False) is not None
+    wait_render(qtbot, window)
+    assert out.is_file() and window.last_result is not None
+    assert window.notice.kind == "success" and "Fertig" in window.notice.label.text()
+
+
+@pytest.mark.slow
+def test_preview_shows_notice_when_originals_are_used(qtbot, window: MainWindow,  # noqa: ANN001
+                                                      synthetic: Path, umlaut_dir: Path,
+                                                      opened: list[Path],
+                                                      monkeypatch: pytest.MonkeyPatch) -> None:
+    (video,) = copy_media(synthetic, umlaut_dir, "HDR HLG.mp4")
+    monkeypatch.setattr(window.video_prep, "submit", lambda paths: 0)  # noch nicht umgewandelt
+    p = photos_project(synthetic, umlaut_dir)
+    p.items.append(Item("video", path=str(video), duration=1.0, taken="2026-08-01T10:00:00"))
+    window.set_project(p, None)
+    rows = [i for i, it in enumerate(window.project.items) if it.kind == "video"]
+    window.timeline.select_rows(rows)
+    assert window.preview_range() == (rows[0] + 1, rows[0] + 1)
+    assert window.on_preview() is not None
+    wait_render(qtbot, window)
+    assert opened and opened[-1].is_file()  # Vorschau wird geöffnet
+    assert window.notice.isVisible() and window.notice.kind == "warning"
+    assert "Original" in window.notice.label.text()
+    assert "HDR HLG.mp4" in window.notice.label.text()
+
+
+@pytest.mark.slow
+def test_preview_without_notice_when_converted(qtbot, window: MainWindow,  # noqa: ANN001
+                                               synthetic: Path, umlaut_dir: Path,
+                                               opened: list[Path]) -> None:
+    (video,) = copy_media(synthetic, umlaut_dir, "Video mit Ton.mp4")
+    p = Project(items=[Item("video", path=str(video), duration=1.0)], base_dir=umlaut_dir)
+    window.set_project(p, None)
+    qtbot.waitUntil(lambda: window.video_prep.pending == 0, timeout=120_000)
+    window.timeline.select_rows([0])
+    window.on_preview()
+    wait_render(qtbot, window)
+    assert opened
+    assert not window.notice.isVisible() or "Original" not in window.notice.label.text()
+
+
+@pytest.mark.slow
+def test_gui_saved_project_renders_identically_via_cli(qtbot, window: MainWindow,  # noqa: ANN001
+                                                       synthetic: Path, umlaut_dir: Path,
+                                                       tmp_path: Path) -> None:
+    from mediacheck import framemd5
+
+    from slideshow.cli import main as cli_main
+
+    copy_media(synthetic, umlaut_dir, "Querformat Wörthersee.jpg", "Hochkant Größe.jpg",
+               "Video mit Ton.mp4")
+    wait_import(qtbot, window, [umlaut_dir])
+    window.project_panel.chapters.setChecked(False)
+    window.timeline.select_rows(list(range(len(window.project.items))))
+    window.item_panel.duration.setValue(1.5)
+    photo = next(i for i, it in enumerate(window.project.items) if it.kind == "photo")
+    window.timeline.select_rows([photo])
+    window.item_panel.text.setPlainText("Grüße aus Kärnten – ß")
+    window.music_panel.add_tracks([synthetic / "Musik 2 – Sommer.m4a"])
+    project_file = umlaut_dir / "Mein Projekt Ö.json"
+    window.save_to(project_file)
+
+    gui_out = tmp_path / "gui.mp4"
+    assert window.export_to(gui_out, confirm=False) is not None
+    wait_render(qtbot, window)
+    assert gui_out.is_file()
+
+    cli_out = tmp_path / "cli.mp4"
+    code = cli_main(["render", str(project_file), "-o", str(cli_out), "--encoder", "libx264",
+                     "--cache-dir", str(tmp_path / "cli-cache")])
+    assert code == 0
+    assert Project.load(project_file).to_dict() == window.project.to_dict()
+    assert framemd5(gui_out) == framemd5(cli_out)
+
+
+# --- Eine Programminstanz ----------------------------------------------------------------
+
+
+def test_single_instance_lock(qtbot) -> None:  # noqa: ANN001
+    key = f"test-{os.getpid()}-{time.monotonic_ns()}"
+    first = SingleInstance(key)
+    second = SingleInstance(key)
+    try:
+        assert first.acquire()
+        assert not second.acquire()
+        first.release()
+        assert second.acquire()  # nach dem Beenden der ersten wieder frei
+    finally:
+        first.release()
+        second.release()
+
+
+def test_single_instance_survives_crashed_first_instance(qtbot) -> None:  # noqa: ANN001
+    key = f"crash-{os.getpid()}-{time.monotonic_ns()}"
+    code = ("import os;from PySide6.QtCore import QCoreApplication;"
+            "from slideshow.app.single import SingleInstance as S;"
+            f"app=QCoreApplication([]);s=S({key!r});assert s.acquire();os._exit(0)")
+    subprocess.run([sys.executable, "-c", code], cwd=ROOT, check=True, timeout=60)
+    inst = SingleInstance(key)
+    try:
+        assert inst.acquire()  # Sperre des abgestürzten Prozesses wird erkannt
+    finally:
+        inst.release()
+
+
+def test_second_start_brings_window_to_front(qtbot, window: MainWindow,  # noqa: ANN001
+                                             synthetic: Path, umlaut_dir: Path) -> None:
+    key = f"front-{os.getpid()}-{time.monotonic_ns()}"
+    inst = SingleInstance(key)
+    assert inst.acquire()
+    inst.activated.connect(window.bring_to_front)
+    project_file = umlaut_dir / "Zweiter Start Ö.json"
+    photos_project(synthetic, umlaut_dir).save(project_file)
+    window.showMinimized()
+    qtbot.waitUntil(window.isMinimized)
+    env = {**os.environ, KEY_ENV: key, "QT_QPA_PLATFORM": "offscreen"}
+    proc = subprocess.Popen([sys.executable, "-m", "slideshow", "gui", str(project_file)],
+                            cwd=ROOT, env=env)
+    try:
+        # Zweiter Start beendet sich sofort, die laufende Instanz kommt nach vorne und
+        # öffnet die mitgegebene Projektdatei
+        qtbot.waitUntil(lambda: proc.poll() is not None, timeout=60_000)
+        assert proc.returncode == 0
+        qtbot.waitUntil(lambda: not window.isMinimized() and window.isVisible(), timeout=10_000)
+        qtbot.waitUntil(lambda: window.project_path == project_file.resolve(), timeout=10_000)
+        assert window.project.name == "Urlaub Wörthersee 2026"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        inst.release()
+
+
+# --- Zeitleiste mit 1000 Elementen ---------------------------------------------------------
+
+
+def test_timeline_with_1000_items_stays_responsive(qtbot, window: MainWindow,  # noqa: ANN001
+                                                   tmp_path: Path) -> None:
+    folder = tmp_path / "Fotos 1000 Ä"
+    folder.mkdir()
+    items = []
+    for i in range(1000):
+        p = folder / f"Bild {i:04d}.jpg"
+        Image.new("RGB", (64, 48), ((i * 7) % 256, (i * 13) % 256, (i * 29) % 256)).save(p)
+        month = 1 + i * 12 // 1000
+        items.append(Item("photo", path=str(p), taken=f"2026-{month:02d}-01T{i % 24:02d}:00:00"))
+    project = Project(items=items, base_dir=folder)
+
+    started = time.perf_counter()
+    window.set_project(project, None)
+    QApplication.processEvents()
+    load_ms = (time.perf_counter() - started) * 1000
+    assert window.model.rowCount() == 1000 + 12  # mit Zwischentiteln
+
+    view = window.timeline
+    bar = view.verticalScrollBar()
+    assert bar.maximum() > 0
+    timings = []
+    positions = [round(bar.maximum() * k / 30) for k in range(31)]
+    positions += positions[::-1][::3]
+    for pos in positions:
+        t0 = time.perf_counter()
+        bar.setValue(pos)
+        view.viewport().repaint()  # synchron zeichnen, wie beim echten Scrollen
+        QApplication.processEvents()
+        timings.append((time.perf_counter() - t0) * 1000)
+        qtbot.wait(5)  # Vorschaubilder kommen währenddessen im Hintergrund
+    worst = max(timings)
+    print(f"\nLaden {load_ms:.0f} ms, Scrollen Median {statistics.median(timings):.1f} ms, "
+          f"Maximum {worst:.1f} ms")
+    assert worst < 100, f"Scroll-Reaktion zu langsam: {worst:.0f} ms"
+    assert load_ms < 1000
+
+    # Nach dem Scrollen erscheinen die Vorschaubilder der sichtbaren Kacheln
+    visible = [r for r in range(window.model.rowCount())
+               if view.viewport().rect().intersects(view.visualRect(window.model.index(r)))
+               and window.model.tile(r).thumb_key is not None]
+    assert visible
+    qtbot.waitUntil(lambda: all(window.model.tile_pixmap(window.model.tile(r)) is not None
+                                for r in visible), timeout=60_000)
+
+    # Verschieben in der großen Zeitleiste bleibt flüssig
+    t0 = time.perf_counter()
+    drop_rows(window, [5], 900)
+    QApplication.processEvents()
+    move_ms = (time.perf_counter() - t0) * 1000
+    assert move_ms < 500, f"Verschieben zu langsam: {move_ms:.0f} ms"
