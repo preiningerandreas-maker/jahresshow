@@ -22,9 +22,9 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
-    QProgressBar,
     QPushButton,
     QScrollArea,
+    QSlider,
     QSplitter,
     QStyle,
     QTabWidget,
@@ -33,10 +33,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from slideshow.app.activity import ActivityPanel, TaskRow
 from slideshow.app.music import MusicPanel, format_minutes
 from slideshow.app.properties import ItemPanel, ProjectPanel
+from slideshow.app.still import StillPreview
 from slideshow.app.tasks import Task, VideoPrep
-from slideshow.app.timeline import ThumbLoader, TimelineModel, TimelineView
+from slideshow.app.timeline import (
+    ZOOM_MAX,
+    ZOOM_MIN,
+    ThumbLoader,
+    TimelineModel,
+    TimelineView,
+)
 from slideshow.core.chapters import apply_chapters, is_chapter_title, media_items
 from slideshow.core.edit import merge_by_date, sort_by_date
 from slideshow.core.importer import (
@@ -109,51 +117,6 @@ class ImportOutcome:
     @property
     def duplicates(self) -> list[tuple[Path, Path]]:
         return self.result.duplicates + self.existing_duplicates
-
-
-class TaskRow(QFrame):
-    """Eine Zeile im Aufgabenbereich: Text, Fortschrittsbalken, Abbrechen."""
-
-    def __init__(self, name: str, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setObjectName(name)
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(6, 2, 6, 2)
-        self.label = QLabel("")
-        self.label.setMinimumWidth(100)
-        self.bar = QProgressBar()
-        self.bar.setRange(0, 1000)
-        self.bar.setTextVisible(False)
-        self.bar.setFixedWidth(160)
-        self.cancel_button = QPushButton("Abbrechen")
-        lay.addWidget(self.label, 1)
-        lay.addWidget(self.bar)
-        lay.addWidget(self.cancel_button)
-        self._cancel: Callable[[], None] | None = None
-        self.cancel_button.clicked.connect(self._on_cancel)
-        self.hide()
-
-    def start(self, text: str, cancel: Callable[[], None] | None) -> None:
-        self._cancel = cancel
-        self.cancel_button.setVisible(cancel is not None)
-        self.cancel_button.setEnabled(True)
-        self.update_progress(text, 0.0)
-        self.show()
-
-    def update_progress(self, text: str, fraction: float) -> None:
-        self.label.setText(text)
-        self.label.setToolTip(text)
-        self.bar.setValue(round(max(0.0, min(1.0, fraction)) * 1000))
-
-    def _on_cancel(self) -> None:
-        if self._cancel is not None:
-            self.cancel_button.setEnabled(False)
-            self.label.setText("Wird abgebrochen …")
-            self._cancel()
-
-    def finish(self) -> None:
-        self._cancel = None
-        self.hide()
 
 
 class NoticeBar(QFrame):
@@ -269,7 +232,14 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(_scroll(self.project_panel), "Show")
         self.tabs.addTab(_scroll(self.music_panel), "Musik")
         self.tabs.tabBar().setExpanding(False)
-        self.tabs.setMinimumWidth(320)
+        self.still = StillPreview(self.cache_dir)
+        right = QWidget()
+        right.setMinimumWidth(320)
+        right_lay = QVBoxLayout(right)
+        right_lay.setContentsMargins(0, 0, 0, 0)
+        right_lay.setSpacing(4)
+        right_lay.addWidget(self.still)
+        right_lay.addWidget(self.tabs, 1)
 
         self.notice = NoticeBar()
         left = QWidget()
@@ -287,26 +257,46 @@ class MainWindow(QMainWindow):
 
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.addWidget(left)
-        self.splitter.addWidget(self.tabs)
+        self.splitter.addWidget(right)
         self.splitter.setStretchFactor(0, 1)
         self.splitter.setStretchFactor(1, 0)
         self.splitter.setChildrenCollapsible(False)
         self.splitter.setSizes([900, 380])
 
-        self.import_row = TaskRow("importRow")
-        self.video_row = TaskRow("videoRow")
-        self.render_row = TaskRow("renderRow")
+        self.activity = ActivityPanel()
+        self.render_row = self.activity.add_row(TaskRow("renderRow", "Video erstellen", 3))
+        self.import_row = self.activity.add_row(TaskRow("importRow", "Einlesen", 2))
+        self.video_row = self.activity.add_row(TaskRow("videoRow", "Videos umwandeln", 1))
         central = QWidget()
         lay = QVBoxLayout(central)
         lay.setContentsMargins(4, 4, 4, 0)
         lay.setSpacing(2)
         lay.addWidget(self.splitter, 1)
-        for row in (self.import_row, self.video_row, self.render_row):
-            lay.addWidget(row)
+        lay.addWidget(self.activity)
         self.setCentralWidget(central)
 
         self.summary_label = QLabel("")
         self.statusBar().addWidget(self.summary_label, 1)
+        self.zoom = QSlider(Qt.Orientation.Horizontal)
+        self.zoom.setObjectName("zoomSlider")
+        self.zoom.setRange(ZOOM_MIN, ZOOM_MAX)
+        self.zoom.setSingleStep(16)
+        self.zoom.setPageStep(32)
+        self.zoom.setValue(self.timeline.tile_width)
+        self.zoom.setFixedWidth(140)
+        tip = "Größe der Bilder in der Zeitleiste (auch mit Strg + Mausrad)"
+        self.zoom.setToolTip(tip)
+        zoom_label = QLabel("Bildgröße")
+        zoom_label.setToolTip(tip)
+        self.statusBar().addPermanentWidget(zoom_label)
+        self.statusBar().addPermanentWidget(self.zoom)
+        self.zoom.valueChanged.connect(self.timeline.set_tile_width)
+        self.timeline.zoomChanged.connect(self._on_zoom)
+
+    def _on_zoom(self, width: int) -> None:
+        self.zoom.blockSignals(True)
+        self.zoom.setValue(width)
+        self.zoom.blockSignals(False)
 
     def _action(self, text: str, slot: Callable[[], object], shortcut: str | None = None,
                 icon: QStyle.StandardPixmap | None = None, tip: str | None = None) -> QAction:
@@ -399,7 +389,7 @@ class MainWindow(QMainWindow):
         prep = self.video_prep
         prep.status.connect(self._on_video_status)
         prep.idle.connect(self._on_video_idle)
-        prep.converted.connect(lambda _p: self._start_duration_later())
+        prep.converted.connect(self._on_video_converted)
         prep.error.connect(lambda _p, msg: self.notice.show_message(msg, "error"))
 
     # --- Kodierer --------------------------------------------------------------------
@@ -423,6 +413,7 @@ class MainWindow(QMainWindow):
         self.project_panel.set_project(project)
         self.music_panel.set_project(project)
         self.item_panel.set_items(project, [])
+        self.still.show_item(project, None)
         self.dirty = False
         self.total_seconds = None
         self._update_title()
@@ -554,12 +545,20 @@ class MainWindow(QMainWindow):
         return [self.project.items[r] for r in self.timeline.selected_rows()]
 
     def _on_selection(self) -> None:
-        self.item_panel.set_items(self.project, self.selected_items())
-        if self.timeline.selected_rows():
+        items = self.selected_items()
+        self.item_panel.set_items(self.project, items)
+        self._show_still(items)
+        if items:
             self.tabs.setCurrentIndex(0)
+
+    def _show_still(self, items: list[Item] | None = None) -> None:
+        """Standbild des (ersten) markierten Elements."""
+        items = self.selected_items() if items is None else items
+        self.still.show_item(self.project, items[0] if items else None)
 
     def _on_item_changed(self) -> None:
         self.model.refresh_rows(self.timeline.selected_rows())
+        self._show_still()
         self.mark_dirty()
 
     def _on_project_changed(self) -> None:
@@ -590,6 +589,7 @@ class MainWindow(QMainWindow):
         items = [it for i, it in enumerate(self.project.items) if i not in rows]
         self.model.replace_items(self._apply_chapters(items))
         self.item_panel.set_items(self.project, [])
+        self.still.show_item(self.project, None)
         self.mark_dirty()
 
     def sort_by_date(self) -> None:
@@ -744,9 +744,15 @@ class MainWindow(QMainWindow):
             self.video_prep.submit(videos)
 
     def _on_video_status(self, text: str, fraction: float) -> None:
-        if not self.video_row.isVisible():
+        if not self.video_row.active:
             self.video_row.start(text, self.cancel_video_prep)
         self.video_row.update_progress(text, fraction)
+
+    def _on_video_converted(self, src: Path) -> None:
+        self._start_duration_later()
+        items = self.selected_items()
+        if items and items[0].path and self.project.resolve(items[0].path) == src:
+            self.still.refresh()  # jetzt mit den Farben der umgewandelten Fassung
 
     def _on_video_idle(self) -> None:
         self.video_row.finish()
@@ -811,7 +817,7 @@ class MainWindow(QMainWindow):
         text = (f"{n} Fotos/Videos · Show-Dauer {format_minutes(seconds)} · "
                 f"Videodatei höchstens ca. {format_size(size)}")
         if size > FAT32_LIMIT:
-            text += " – größer als 4 GB, passt nicht auf FAT32-USB-Sticks!"
+            text += ". Achtung: größer als 4 GB, passt nicht auf FAT32-USB-Sticks!"
         self.summary_label.setText(text)
         self.music_panel.set_show_length(seconds)
 
@@ -908,7 +914,7 @@ class MainWindow(QMainWindow):
         self._set_render_actions(False)
         self.render_row.start(f"{label} …", task.cancel)
         task.progress.connect(lambda msg, frac: self.render_row.update_progress(
-            f"{label}: {msg} – {round(frac * 100)} %", frac))
+            f"{label}: {msg}", frac))
         task.done.connect(lambda r: self._render_done(r, opts))
         task.failed.connect(self._render_failed)
         task.cancelled.connect(lambda: self.notice.show_message(
@@ -975,6 +981,7 @@ class MainWindow(QMainWindow):
         event.accept()
 
     def shutdown(self) -> None:
+        self.still.shutdown()
         for task in (self._render_task, self._import_task):
             if task is not None and task.running:
                 task.cancel()

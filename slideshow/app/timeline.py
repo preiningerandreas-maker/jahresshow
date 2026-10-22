@@ -26,6 +26,7 @@ from PySide6.QtCore import (
     QPoint,
     QPointF,
     QRect,
+    QRectF,
     QSize,
     Qt,
     Signal,
@@ -44,6 +45,7 @@ from PySide6.QtGui import (
     QPen,
     QPixmap,
     QPolygonF,
+    QWheelEvent,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -61,14 +63,17 @@ from slideshow.core.project import Item, Project
 from slideshow.core.thumbs import ThumbnailCache, ThumbProcessPool
 
 MIME_ROWS = "application/x-jahresshow-rows"
-THUMB_W, THUMB_H = 160, 100  # Vorschaubild in der Kachel (logische Pixel)
-TILE_W, TILE_H = 176, 150
-PIXMAP_CACHE = 800  # Vorschaubilder im Speicher (je ca. 60 KB)
+# Kachelgröße (Breite des Vorschaubilds in logischen Pixeln), per Zoom-Regler einstellbar
+ZOOM_MIN, ZOOM_DEFAULT, ZOOM_MAX = 96, 160, 288
+LOAD_BOX = 256  # Vorschaubilder im Speicher: längere Seite in Pixeln
+PIXMAP_CACHE = 300  # Vorschaubilder im Speicher (je ca. 200 KB)
+BLUR_W = 12  # Breite des Unschärfe-Hintergrunds; hochskaliert wirkt er weich wie im Export
 MAX_QUEUE = 300
 SCROLL_PAUSE = 0.15  # Sekunden ohne Nachladen nach jeder Scrollbewegung
 
 KIND_LABELS = {"photo": "Foto", "video": "Video", "title": "Titel"}
-DARK = QColor("#202020")
+BLACK = QColor("#000000")
+DARKEN = QColor(0, 0, 0, 38)  # wie eq=brightness=-0.15 im Export
 WHITE = QColor("#FFFFFF")
 PLACEHOLDER = QColor("#D0D0D0")
 PLACEHOLDER_TEXT = QColor("#707070")
@@ -103,6 +108,7 @@ class Tile:
     duplicate: bool
     background: str
     thumb_key: str | None  # Pfad des Vorschaubilds, None bei Titeln ohne Foto
+    fit: str  # Formatmodus blur | black | crop
 
 
 class ThumbLoader(QObject):
@@ -174,7 +180,7 @@ class ThumbLoader(QObject):
                 img = QImage(str(thumb))
                 if img.isNull():
                     raise OSError("Vorschaubild unlesbar")
-                img = img.scaled(THUMB_W, THUMB_H, Qt.AspectRatioMode.KeepAspectRatio,
+                img = img.scaled(LOAD_BOX, LOAD_BOX, Qt.AspectRatioMode.KeepAspectRatio,
                                  Qt.TransformationMode.SmoothTransformation)
             except Exception:  # noqa: BLE001 - kaputte Datei: Platzhalter zeigen
                 self.failed.emit(str(src))
@@ -220,6 +226,7 @@ class TimelineModel(QAbstractListModel):
         self._rows_by_path: dict[str, list[int]] | None = None
         self._tiles: dict[int, Tile] = {}
         self._resolved: dict[str, Path] = {}
+        self._blurs: OrderedDict[str, QPixmap] = OrderedDict()
         if loader is not None:
             loader.loaded.connect(self._on_loaded)
             loader.failed.connect(self._on_failed)
@@ -259,7 +266,7 @@ class TimelineModel(QAbstractListModel):
             src = self.thumb_source(item)
             key = str(src) if src is not None and media_kind(src) is not None else None
             t = Tile(item_label(item), self.subtitle(item), item.kind, is_chapter_title(item),
-                     src is not None and src in self.duplicates, item.background, key)
+                     src is not None and src in self.duplicates, item.background, key, item.fit)
             self._tiles[row] = t
         return t
 
@@ -330,6 +337,18 @@ class TimelineModel(QAbstractListModel):
         return "\n".join(lines)
 
 
+    def blur_pixmap(self, tile: Tile, pm: QPixmap) -> QPixmap:
+        """Stark verkleinertes Vorschaubild; groß gezeichnet ergibt es den unscharfen
+        Hintergrund des Formatmodus „blur“."""
+        key = tile.thumb_key or ""
+        small = self._blurs.get(key)
+        if small is None:
+            small = pm.scaledToWidth(BLUR_W, Qt.TransformationMode.SmoothTransformation)
+            self._blurs[key] = small
+            while len(self._blurs) > PIXMAP_CACHE:
+                self._blurs.popitem(last=False)
+        return small
+
     def _rows_for(self, key: str) -> list[int]:
         if self._rows_by_path is None:
             rows: dict[str, list[int]] = {}
@@ -341,6 +360,7 @@ class TimelineModel(QAbstractListModel):
         return self._rows_by_path.get(key, [])
 
     def _on_loaded(self, key: str, img: QImage) -> None:
+        self._blurs.pop(key, None)
         self._pixmaps[key] = QPixmap.fromImage(img)
         self._pixmaps.move_to_end(key)
         while len(self._pixmaps) > PIXMAP_CACHE:
@@ -415,13 +435,55 @@ class TimelineModel(QAbstractListModel):
         return new_rows
 
 
+def fit_rect(src_w: float, src_h: float, frame: QRectF, cover: bool) -> QRectF:
+    """Rechteck für ein Bild im Rahmen: ganz sichtbar (cover=False) oder füllend."""
+    scale = (max if cover else min)(frame.width() / src_w, frame.height() / src_h)
+    w, h = src_w * scale, src_h * scale
+    return QRectF(frame.center().x() - w / 2, frame.center().y() - h / 2, w, h)
+
+
+def paint_fit(painter: QPainter, frame: QRect, pm: QPixmap, fit: str,
+              blur: Callable[[], QPixmap]) -> None:
+    """Vorschaubild im 16:9-Rahmen wie im Export: blur, black oder crop."""
+    size = pm.deviceIndependentSize()
+    f = QRectF(frame)
+    painter.save()
+    painter.setClipRect(frame)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    if fit == "crop":
+        painter.drawPixmap(fit_rect(size.width(), size.height(), f, True), pm,
+                           QRectF(pm.rect()))
+    else:
+        if fit == "blur":
+            small = blur()
+            painter.drawPixmap(fit_rect(size.width(), size.height(), f, True), small,
+                               QRectF(small.rect()))
+            painter.fillRect(frame, DARKEN)
+        else:
+            painter.fillRect(frame, BLACK)
+        painter.drawPixmap(fit_rect(size.width(), size.height(), f, False), pm,
+                           QRectF(pm.rect()))
+    painter.restore()
+
+
 class TileDelegate(QStyledItemDelegate):
-    """Kachel: Vorschaubild oben, zwei Textzeilen darunter. Zwischentitel und Titelkarten
-    werden als Farbfläche mit Text gezeichnet."""
+    """Kachel: Vorschaubild (16:9, im Formatmodus des Elements) oben, zwei Textzeilen
+    darunter. Zwischentitel und Titelkarten werden als Farbfläche mit Text gezeichnet."""
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self.thumb_w = ZOOM_DEFAULT
+
+    @property
+    def thumb_h(self) -> int:
+        return round(self.thumb_w * 9 / 16)
+
+    def tile_size(self, line_height: int) -> QSize:
+        return QSize(self.thumb_w + 16, self.thumb_h + 2 * line_height + 20)
 
     def sizeHint(self, option: QStyleOptionViewItem,
                  index: QModelIndex | QPersistentModelIndex) -> QSize:
-        return QSize(TILE_W, TILE_H)
+        return self.tile_size(option.fontMetrics.height())  # type: ignore[attr-defined]
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem,
               index: QModelIndex | QPersistentModelIndex) -> None:
@@ -439,12 +501,10 @@ class TileDelegate(QStyledItemDelegate):
             painter.setPen(QPen(pal.color(QPalette.ColorRole.Highlight), 2))
             painter.drawRect(r.adjusted(1, 1, -1, -1))
 
-        thumb = QRect(r.x() + (r.width() - THUMB_W) // 2, r.y() + 4, THUMB_W, THUMB_H)
+        tw, th = self.thumb_w, self.thumb_h
+        thumb = QRect(r.x() + (r.width() - tw) // 2, r.y() + 4, tw, th)
         if pm is not None:
-            size = pm.deviceIndependentSize().toSize()
-            painter.fillRect(thumb, DARK)
-            painter.drawPixmap(QPoint(thumb.x() + (thumb.width() - size.width()) // 2,
-                                      thumb.y() + (thumb.height() - size.height()) // 2), pm)
+            paint_fit(painter, thumb, pm, tile.fit, lambda: model.blur_pixmap(tile, pm))
         elif tile.kind == "title" and tile.thumb_key is None:
             painter.fillRect(thumb, QColor(tile.background))
             painter.setPen(WHITE)
@@ -497,6 +557,7 @@ class TimelineView(QListView):
 
     filesDropped = Signal(list)  # list[str]
     deleteRequested = Signal()
+    zoomChanged = Signal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -515,9 +576,42 @@ class TimelineView(QListView):
         self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-        self.verticalScrollBar().setSingleStep(TILE_H // 3)
+        self.verticalScrollBar().setSingleStep(ZOOM_DEFAULT // 3)
         self.verticalScrollBar().valueChanged.connect(self._on_scroll)
         self.setMovement(QListView.Movement.Snap)
+
+    @property
+    def tile_width(self) -> int:
+        delegate = self.itemDelegate()
+        assert isinstance(delegate, TileDelegate)
+        return delegate.thumb_w
+
+    def set_tile_width(self, width: int) -> None:
+        """Kachelgröße ändern (Zoom). Die markierte Kachel bleibt im Blick."""
+        width = max(ZOOM_MIN, min(ZOOM_MAX, int(width)))
+        delegate = self.itemDelegate()
+        assert isinstance(delegate, TileDelegate)
+        if width == delegate.thumb_w:
+            return
+        current = self.currentIndex()
+        delegate.thumb_w = width
+        # Gleich große Kacheln merkt sich die Ansicht; neu messen lassen
+        self.setUniformItemSizes(False)
+        self.setUniformItemSizes(True)
+        self.doItemsLayout()
+        self.verticalScrollBar().setSingleStep(max(16, width // 3))
+        if current.isValid():
+            self.scrollTo(current, QAbstractItemView.ScrollHint.PositionAtCenter)
+        self.zoomChanged.emit(width)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            # Strg + Mausrad: Kacheln größer oder kleiner
+            step = 16 if event.angleDelta().y() > 0 else -16
+            self.set_tile_width(self.tile_width + step)
+            event.accept()
+            return
+        super().wheelEvent(event)
 
     def _on_scroll(self, _value: int) -> None:
         model = self.model()
