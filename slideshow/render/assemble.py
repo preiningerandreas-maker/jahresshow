@@ -114,7 +114,9 @@ def block_graph(block: Block) -> str:
             )
             graph.append(f"[{cur_a}][a{i}]acrossfade=d={t / FPS:.6f}:c1=tri:c2=tri[y{i}]")
         else:
-            graph.append(f"[{cur_v}][{cur_a}][v{i}][a{i}]concat=n=2:v=1:a=1[x{i}][y{i}]")
+            # concat liefert Zeitbasis 1/1000000; ein späteres xfade braucht wieder 1/30
+            graph.append(f"[{cur_v}][{cur_a}][v{i}][a{i}]concat=n=2:v=1:a=1[c{i}][y{i}]")
+            graph.append(f"[c{i}]settb=1/{FPS},setpts=N[x{i}]")
         cur_v, cur_a = f"x{i}", f"y{i}"
         length += p.frames - t
     graph.append(f"[{cur_v}]null[vout]")

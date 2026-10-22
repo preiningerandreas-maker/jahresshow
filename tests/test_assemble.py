@@ -75,6 +75,18 @@ def test_hard_cut_uses_concat() -> None:
     assert "concat=n=2:v=1:a=1" in g and "xfade" not in g
 
 
+def test_hard_cut_then_transition_resets_timebase() -> None:
+    """Regression: concat liefert Zeitbasis 1/1000000, ein folgendes xfade braucht 1/30."""
+    p = Project(items=[Item("photo", path="a.jpg"),
+                       Item("photo", path="b.jpg", transition="none"),
+                       Item("photo", path="c.jpg", transition="fade")],
+                base_dir=Path("."))
+    g = block_graph(plan_blocks(p.timeline(lambda _: 1.0))[0])
+    assert "concat=n=2:v=1:a=1[c1][y1]" in g
+    assert "[c1]settb=1/30,setpts=N[x1]" in g
+    assert "[x1][v2]xfade=" in g
+
+
 def test_select_section() -> None:
     p = _project(10)
     assert len(select_section(p, 3, 5).items) == 3
