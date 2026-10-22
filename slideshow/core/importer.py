@@ -389,6 +389,44 @@ def find_duplicates(
     return dups
 
 
+def find_existing_duplicates(
+    media: list[MediaFile], existing: Iterable[Path], cancel: threading.Event | None = None
+) -> tuple[list[tuple[Path, Path]], list[Path]]:
+    """Neu importierte Dateien mit den schon im Projekt vorhandenen vergleichen.
+
+    Rückgabe: (inhaltsgleiche Paare (neu, vorhanden), Dateien, die selbst schon im Projekt
+    sind). Gehasht werden nur Dateien gleicher Größe."""
+    by_size: dict[int, list[Path]] = defaultdict(list)
+    already: list[Path] = []
+    known = {os.path.normcase(str(p.resolve())) for p in existing}
+    for p in existing:
+        try:
+            by_size[p.stat().st_size].append(p)
+        except OSError:
+            continue
+    dups: list[tuple[Path, Path]] = []
+    hashes: dict[Path, str] = {}
+
+    def digest(p: Path) -> str:
+        if p not in hashes:
+            hashes[p] = file_hash(p, cancel)
+        return hashes[p]
+
+    for m in media:
+        if os.path.normcase(str(m.path.resolve())) in known:
+            already.append(m.path)
+            continue
+        for old in by_size.get(m.size, []):
+            try:
+                if digest(m.path) == digest(old):
+                    m.duplicate_of = old
+                    dups.append((m.path, old))
+                    break
+            except OSError:
+                continue
+    return dups, already
+
+
 def sort_key(m: MediaFile) -> tuple[datetime, str]:
     return (m.taken, m.path.name.casefold())
 
