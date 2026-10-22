@@ -60,7 +60,8 @@ class Item:
     background: str = "#1E2A3A"  # Titelkarte ohne Foto
     audio: bool = True  # Originalton eines Videos verwenden
     volume: float = 1.0
-    chapter: str | None = None
+    chapter: str | None = None  # Kapitel "JJJJ-MM"; Titel mit Kapitel = Zwischentitel
+    taken: str | None = None  # Aufnahmedatum ISO 8601, für die Kapitel
 
     def validate(self) -> None:
         if self.kind not in KINDS:

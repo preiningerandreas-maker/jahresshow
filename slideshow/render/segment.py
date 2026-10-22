@@ -7,10 +7,11 @@ import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from PIL import Image, ImageOps
+from PIL import Image
 
 from slideshow.core.ffmpeg import ProgressCallback, run_ffmpeg
-from slideshow.core.importer import video_info
+from slideshow.core.importer import open_photo, video_info
+from slideshow.core.normalize import cached_normalized
 from slideshow.core.project import FPS, Item, Project, TimelineEntry
 from slideshow.render.cache import cleanup_tmp, file_fingerprint, make_key, tmp_path
 from slideshow.render.encoder import encoder_args
@@ -18,13 +19,6 @@ from slideshow.render.text import font_file, save_text_png
 
 SAMPLE_RATE = 48000
 SAMPLES_PER_FRAME = SAMPLE_RATE // FPS  # 1600, dadurch sind Ton und Bild immer gleich lang
-
-try:
-    from pillow_heif import register_heif_opener
-
-    register_heif_opener()
-except ImportError:  # pragma: no cover - HEIC dann nicht verfügbar
-    pass
 
 
 @dataclass(frozen=True)
@@ -77,7 +71,7 @@ def fit_filter(fit: str, w: int, h: int, src: str, out: str) -> str:
 def _item_settings(item: Item) -> dict:
     d = asdict(item)
     # Übergänge, Dauer (steckt in frames) und Kapitel gehören nicht in den Schlüssel
-    for k in ("transition", "transition_duration", "duration", "chapter", "path"):
+    for k in ("transition", "transition_duration", "duration", "chapter", "taken", "path"):
         d.pop(k, None)
     return d
 
@@ -92,7 +86,10 @@ def segment_key(project: Project, entry: TimelineEntry, cfg: RenderConfig) -> st
         "encoder": encoder_args(cfg.encoder, cfg.height, intermediate=True),
     }
     if item.path:
-        data["source"] = file_fingerprint(project.resolve(item.path))
+        src = project.resolve(item.path)
+        data["source"] = file_fingerprint(src)
+        if item.kind == "video":
+            data["normalized"] = cached_normalized(src, cfg.cache_dir) is not None
     if item.text is not None:
         font = font_file(item.text.font)
         data["font"] = [font.name, font.stat().st_size]
@@ -101,9 +98,7 @@ def segment_key(project: Project, entry: TimelineEntry, cfg: RenderConfig) -> st
 
 def prepare_photo(src: Path, w: int, h: int, out: Path) -> Path:
     """Foto (auch HEIC) laden, EXIF-Drehung anwenden, auf nötige Größe verkleinern, als PNG."""
-    with Image.open(src) as im:
-        img = ImageOps.exif_transpose(im)
-        img = img.convert("RGB")
+    img = open_photo(src)
     factor = max(w / img.width, h / img.height)  # Größe, die den Rahmen füllend abdeckt
     if factor < 1:
         size = (max(2, round(img.width * factor)), max(2, round(img.height * factor)))
@@ -144,7 +139,9 @@ def render_segment(
 
     if item.kind == "video":
         assert item.path is not None
-        src = project.resolve(item.path)
+        # Umgewandelte Fassung (30 fps CFR, SDR) verwenden, sobald sie im Cache liegt
+        orig = project.resolve(item.path)
+        src = cached_normalized(orig, cfg.cache_dir) or orig
         info = video_info(src)
         if item.start > 0:
             args += ["-ss", f"{item.start:.3f}"]
