@@ -39,7 +39,12 @@ class RenderConfig:
 
 def to_bt709() -> str:
     """Einheitliches Ausgabeformat: bt709, begrenzter Bereich, yuv420p, quadratische Pixel."""
-    return "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,setsar=1"
+    return (
+        "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,"
+        # Farbangaben fest setzen, sonst bleiben sie bei Fotos/Handyvideos "unbekannt"
+        "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv,"
+        "setsar=1"
+    )
 
 
 def fit_filter(fit: str, w: int, h: int, src: str, out: str) -> str:

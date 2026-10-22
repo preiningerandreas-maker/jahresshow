@@ -190,3 +190,33 @@ def test_music_loops_fades_and_ducks(synthetic: Path, umlaut_dir: Path) -> None:
     assert ending < normal - 15.0  # Fade-out
     # zweiter Aufruf aus dem Cache
     assert build_music(p, total, [(5.0, 9.0)], umlaut_dir / "cache") == music
+
+
+def test_final_video_has_bt709_color_metadata(show: Project, umlaut_dir: Path) -> None:
+    """Endvideo trägt bt709 ausdrücklich in den Metadaten, auch bei Quellen ohne Farbangaben
+    (Fotos, Handyvideos mit "unknown")."""
+    out = umlaut_dir / "Farbe Ü.mp4"
+    render_project(show, RenderOptions(out, preview=True, cache_dir=umlaut_dir / "cache"))
+    v, _, _ = _streams(out)
+    assert v.get("color_primaries") == "bt709"
+    assert v.get("color_transfer") == "bt709"
+    assert v.get("color_space") == "bt709"
+
+
+def test_hard_cut_then_transition_in_one_block(synthetic: Path, umlaut_dir: Path) -> None:
+    """Regression: harter Schnitt und danach Überblendung im selben Block (Standardgröße 20)."""
+    _copy_media(synthetic, umlaut_dir, "Querformat Wörthersee.jpg", "Hochkant Größe.jpg")
+    p = Project(
+        items=[
+            Item("photo", path="Querformat Wörthersee.jpg", duration=1.0),
+            Item("photo", path="Hochkant Größe.jpg", duration=1.0, transition="none"),
+            Item("photo", path="Querformat Wörthersee.jpg", duration=1.0, transition="fade"),
+        ],
+        settings=Settings(transition_duration=0.4),
+        base_dir=umlaut_dir,
+    )
+    out = umlaut_dir / "Schnitt.mp4"
+    result = render_project(p, RenderOptions(out, preview=True, cache_dir=umlaut_dir / "c"))
+    assert result.blocks_total == 1
+    v, _, _ = _streams(out)
+    assert int(v["nb_frames"]) == p.total_frames(clip_length)
