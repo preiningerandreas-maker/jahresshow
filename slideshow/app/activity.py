@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -17,31 +17,27 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-# Eigenes Aussehen: Der Windows-11-Stil zeichnet Fortschritt nur als haarfeine Linie, die
-# leicht als „leer“ übersehen wird. So ist der Balken in jedem Stil gut sichtbar.
-BAR_STYLE = (
-    "QProgressBar { border: 1px solid #8A8A8A; border-radius: 3px; background: #E6E6E6;"
-    " color: #000000; text-align: center; min-height: 16px; }"
-    "QProgressBar::chunk { background-color: #66BB6A; border-radius: 2px; }"
-)
-
-
 GAP = 6  # Abstand zwischen Text, Balken und Knöpfen
 
 
 class ProgressBar(QProgressBar):
-    """Fortschritt 0..1 mit Prozentzahl im Balken."""
+    """Fortschritt 0..1. Aussehen aus dem zentralen Theme (gefüllter Balken in jedem
+    Windows-Stil; der Windows-11-Stil zeichnet sonst nur eine haarfeine Linie). Die
+    Prozentzahl steht daneben (percent), im Balken wäre sie nicht überall lesbar."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setRange(0, 1000)
         self.setFormat("%p %")
-        self.setTextVisible(True)
-        self.setStyleSheet(BAR_STYLE)
-        self.setFixedWidth(170)
+        self.setTextVisible(False)
+        self.setFixedWidth(150)
+        self.percent = QLabel("0 %")
+        self.percent.setFixedWidth(self.percent.fontMetrics().horizontalAdvance("100 %") + 6)
+        self.percent.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
     def set_fraction(self, fraction: float) -> None:
         self.setValue(round(max(0.0, min(1.0, fraction)) * 1000))
+        self.percent.setText(self.text())
 
 
 class TaskRow(QFrame):
@@ -64,6 +60,7 @@ class TaskRow(QFrame):
         self.cancel_button = QPushButton("Abbrechen")
         lay.addWidget(self.label, 1)
         lay.addWidget(self.bar)
+        lay.addWidget(self.bar.percent)
         lay.addWidget(self.cancel_button)
         # Platz unter dem Details-Knopf der Kopfzeile, damit alles bündig untereinander steht
         self.pad = QWidget()
@@ -120,7 +117,6 @@ class ActivityPanel(QFrame):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("activityPanel")
-        self.setFrameShape(QFrame.Shape.StyledPanel)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -137,6 +133,7 @@ class ActivityPanel(QFrame):
         self.toggle.setToolTip("Alle laufenden Aufgaben einzeln anzeigen")
         head.addWidget(self.summary, 1)
         head.addWidget(self.bar)
+        head.addWidget(self.bar.percent)
         head.addWidget(self.cancel_button)
         head.addWidget(self.toggle)
         outer.addLayout(head)

@@ -16,6 +16,7 @@ from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPixmap
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from slideshow.app.tasks import Task
+from slideshow.app.theme import color
 from slideshow.core.normalize import cached_normalized
 from slideshow.core.project import Item, Project
 from slideshow.render.segment import render_still, still_key
@@ -26,7 +27,7 @@ MAX_FILES = 300  # Standbilder im Cache, ältere werden entfernt
 
 
 class StillPreview(QWidget):
-    """Zeigt das Standbild im Seitenverhältnis 16:9."""
+    """Monitor: zeigt das Standbild so groß wie möglich im Seitenverhältnis 16:9."""
 
     updated = Signal()  # neues Bild wird angezeigt
 
@@ -34,10 +35,8 @@ class StillPreview(QWidget):
         super().__init__(parent)
         self.cache_dir = cache_dir
         self.setObjectName("stillPreview")
-        sp = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        sp.setHeightForWidth(True)
-        self.setSizePolicy(sp)
-        self.setMinimumSize(160, 90)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setMinimumSize(240, 135)
         self.pixmap: QPixmap | None = None
         self.message = "Kein Element markiert"
         self.note = ""
@@ -55,21 +54,17 @@ class StillPreview(QWidget):
         self._timer.setInterval(DEBOUNCE_MS)
         self._timer.timeout.connect(self._start)
 
-    # --- Größe: immer 16:9 ---------------------------------------------------------
-
-    def hasHeightForWidth(self) -> bool:
-        return True
-
-    def heightForWidth(self, width: int) -> int:
-        return round(width * 9 / 16)
-
     def sizeHint(self) -> QSize:
-        return QSize(320, 180)
+        return QSize(640, 360)
 
-    def resizeEvent(self, event: object) -> None:  # noqa: N802
-        target = self.heightForWidth(self.width())
-        if self.height() != target:
-            self.setFixedHeight(target)
+    def frame_rect(self) -> QRect:
+        """Größtes 16:9-Rechteck in der Mitte des Widgets (Rest: Hintergrund)."""
+        m = 12
+        avail = self.rect().adjusted(m, m, -m, -m)
+        w = min(avail.width(), round(avail.height() * 16 / 9))
+        h = round(w * 9 / 16)
+        return QRect(avail.x() + (avail.width() - w) // 2,
+                     avail.y() + (avail.height() - h) // 2, w, h)
 
     # --- Inhalt -------------------------------------------------------------------
 
@@ -178,20 +173,23 @@ class StillPreview(QWidget):
 
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
         p = QPainter(self)
-        r = self.rect()
-        p.fillRect(r, QColor("#202020"))
+        p.fillRect(self.rect(), color("bg"))
+        r = self.frame_rect()
+        p.fillRect(r, QColor("#000000"))  # Bildfläche wie auf dem Fernseher
+        p.setPen(color("line"))
+        p.drawRect(r.adjusted(0, 0, -1, -1))
         if self.pixmap is not None:
             p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
             p.drawPixmap(r, self.pixmap)
-        p.setPen(QColor("#FFFFFF"))
+        p.setPen(color("text"))
         if self.message:
             p.drawText(r, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self.message)
         info = "Wird aktualisiert …" if self.busy else self.note
         if info:
             fm = self.fontMetrics()
-            band = QRect(0, r.height() - fm.height() - 6, r.width(), fm.height() + 6)
-            p.fillRect(band, QColor(0, 0, 0, 160))
-            p.drawText(band.adjusted(6, 0, -6, 0), Qt.AlignmentFlag.AlignVCenter, info)
+            band = QRect(r.x(), r.bottom() - fm.height() - 7, r.width(), fm.height() + 8)
+            p.fillRect(band, color("bg"))
+            p.drawText(band.adjusted(8, 0, -8, 0), Qt.AlignmentFlag.AlignVCenter, info)
         p.end()
 
 

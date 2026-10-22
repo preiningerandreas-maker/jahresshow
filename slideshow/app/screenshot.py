@@ -42,7 +42,6 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--project")
     ap.add_argument("--cache-dir")
-    ap.add_argument("--style", help="Qt-Stil, z. B. windows11 (T490s) oder windowsvista (T450s)")
     ns = ap.parse_args(argv)
 
     native = native_scale()
@@ -58,8 +57,6 @@ def main(argv: list[str] | None = None) -> int:
     from slideshow.app.timeline import ZOOM_MAX, ZOOM_MIN
 
     app = QApplication([])
-    if ns.style:
-        app.setStyle(ns.style)
     _translate(app)
     cache = Path(ns.cache_dir) if ns.cache_dir else None
     win = MainWindow(cache_dir=cache, encoder="libx264", open_file=lambda _p: None)
@@ -70,6 +67,7 @@ def main(argv: list[str] | None = None) -> int:
     if ns.project:
         win.load_from(Path(ns.project))
     win.video_prep.shutdown()  # keine Umwandlung im Hintergrund während der Prüfung
+    win.video_row.finish()
 
     def settle(seconds: float = 0.3) -> None:
         end = time.monotonic() + seconds
@@ -85,11 +83,9 @@ def main(argv: list[str] | None = None) -> int:
     out = Path(ns.out)
     out.mkdir(parents=True, exist_ok=True)
     tag = f"{ns.width}x{ns.height}@{round(ns.scale * 100)}"
-    if ns.style:
-        tag += f"-{ns.style}"
     report: dict = {"screen": [ns.width, ns.height], "scale": ns.scale,
                     "window": [win.width(), win.height()],
-                    "dpr": win.devicePixelRatioF(), "style": app.style().name(),
+                    "dpr": win.devicePixelRatioF(),
                     "min_size": [
                         win.minimumSizeHint().width(), win.minimumSizeHint().height()],
                     "states": {}, "files": []}

@@ -80,6 +80,23 @@ class ColorButton(QPushButton):
             self.colorChanged.emit(self._color)
 
 
+def form_layout(box: QWidget) -> QFormLayout:
+    """Formular für den schmalen Eigenschaftenbereich: wird es eng, steht die Beschriftung
+    über dem Feld statt daneben."""
+    form = QFormLayout(box)
+    form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+    form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+    return form
+
+
+def combo() -> QComboBox:
+    """Auswahlliste, die schmaler sein darf als ihr längster Eintrag (dieser wird gekürzt)."""
+    c = QComboBox()
+    c.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+    c.setMinimumContentsLength(8)
+    return c
+
+
 def _spin(lo: float, hi: float, step: float, suffix: str, special: str | None = None,
           decimals: int = 1) -> QDoubleSpinBox:
     s = QDoubleSpinBox()
@@ -121,7 +138,7 @@ class ItemPanel(QWidget):
 
         # --- Anzeige ---
         self.show_box = QGroupBox("Anzeige")
-        form = QFormLayout(self.show_box)
+        form = form_layout(self.show_box)
         self.duration = _spin(0.0, 600.0, 0.5, " s", "Standard")
         self.duration.setToolTip("Wie lange das Element zu sehen ist. „Standard“: Fotos so "
                                  "lange wie im Projekt eingestellt, Videos in voller Länge.")
@@ -133,14 +150,14 @@ class ItemPanel(QWidget):
         self.audio = QCheckBox("Originalton verwenden")
         self.audio.setToolTip("Ton des Videos abspielen. Die Musik wird währenddessen leiser.")
         form.addRow(self.audio)
-        self.fit = QComboBox()
+        self.fit = combo()
         for key, label in FIT_LABELS.items():
             self.fit.addItem(label, key)
         self.fit.setToolTip(FIT_HELP)
         self.fit_label = QLabel("Bildformat")
         self.fit_label.setToolTip(FIT_HELP)
         form.addRow(self.fit_label, self.fit)
-        self.transition = QComboBox()
+        self.transition = combo()
         self.transition.addItem("Wie im Projekt", None)
         for key, label in TRANSITION_LABELS.items():
             self.transition.addItem(label, key)
@@ -152,7 +169,7 @@ class ItemPanel(QWidget):
 
         # --- Titelkarte ---
         self.title_box = QGroupBox("Titel")
-        tform = QFormLayout(self.title_box)
+        tform = form_layout(self.title_box)
         self.background = ColorButton("Hintergrundfarbe")
         tform.addRow("Hintergrundfarbe", self.background)
         photo_row = QHBoxLayout()
@@ -168,19 +185,20 @@ class ItemPanel(QWidget):
         outer.addWidget(self.title_box)
 
         # --- Text ---
-        self.text_box = QGroupBox("Text im Bild")
-        xform = QFormLayout(self.text_box)
+        self.text_box = QGroupBox("Text im Bild (optional)")
+        xform = form_layout(self.text_box)
         self.text = QPlainTextEdit()
-        self.text.setPlaceholderText("Text eingeben (leer = kein Text)")
+        # Hinweis als Tooltip statt Platzhalter: gedämpfter Text wäre im Eingabefeld zu blass
+        self.text.setToolTip("Text, der im Bild erscheint. Leer lassen für kein Text.")
         self.text.setTabChangesFocus(True)
         fm = self.text.fontMetrics()
         self.text.setFixedHeight(fm.lineSpacing() * 3 + 12)
         xform.addRow(self.text)
-        self.position = QComboBox()
+        self.position = combo()
         for key, label in POSITION_LABELS.items():
             self.position.addItem(label, key)
         xform.addRow("Position", self.position)
-        self.font_combo = QComboBox()
+        self.font_combo = combo()
         self.font_combo.addItem(BUNDLED_FONT, BUNDLED_FONT)
         self.font_combo.addItem(OTHER_FONT, None)
         xform.addRow("Schrift", self.font_combo)
@@ -379,13 +397,13 @@ class ProjectPanel(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         box = QGroupBox("Ganze Show")
-        form = QFormLayout(box)
+        form = form_layout(box)
         self.name = QLineEdit()
         self.name.setToolTip("Name des Projekts, Vorschlag für den Dateinamen beim Export")
         form.addRow("Name", self.name)
         self.photo_duration = _spin(0.5, 60.0, 0.5, " s")
         form.addRow("Fotos zeigen", self.photo_duration)
-        self.transition = QComboBox()
+        self.transition = combo()
         for key, label in TRANSITION_LABELS.items():
             self.transition.addItem(label, key)
         form.addRow("Übergang", self.transition)
@@ -395,7 +413,7 @@ class ProjectPanel(QWidget):
         self.chapters.setToolTip("Vor jedem neuen Monat erscheint ein Titel wie „März 2026“. "
                                  "Den Text können Sie in der Zeitleiste anklicken und ändern.")
         form.addRow(self.chapters)
-        self.resolution = QComboBox()
+        self.resolution = combo()
         self.resolution.addItem("Full HD 1920×1080 (empfohlen)", "1080p")
         self.resolution.addItem("4K 3840×2160 (große Datei, langsam)", "2160p")
         form.addRow("Bildgröße", self.resolution)

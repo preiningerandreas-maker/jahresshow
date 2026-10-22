@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 
-from PySide6.QtCore import QStandardPaths, Qt, QTimer, QUrl
+from PySide6.QtCore import QSize, QStandardPaths, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -24,20 +24,23 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSlider,
     QSplitter,
-    QStyle,
     QTabWidget,
     QToolBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from slideshow.app.activity import ActivityPanel, TaskRow
+from slideshow.app.icons import icon
 from slideshow.app.music import MusicPanel, format_minutes
 from slideshow.app.properties import ItemPanel, ProjectPanel
 from slideshow.app.still import StillPreview
 from slideshow.app.tasks import Task, VideoPrep
+from slideshow.app.theme import apply_theme, dark_title_bar
 from slideshow.app.timeline import (
     ZOOM_MAX,
     ZOOM_MIN,
@@ -120,16 +123,20 @@ class ImportOutcome:
 
 
 class NoticeBar(QFrame):
-    """Gut sichtbarer Hinweis über der Zeitleiste (bleibt, bis er geschlossen wird)."""
+    """Hinweis über den Bereichen (bleibt, bis er geschlossen wird). Die Art erkennt man am
+    Symbol, nicht an einer Farbe: Blau ist der Auswahl vorbehalten."""
 
-    COLORS = {"info": ("#E3F2FD", "#0D47A1"), "warning": ("#FFF3CD", "#664D03"),
-              "error": ("#F8D7DA", "#842029"), "success": ("#D1E7DD", "#0F5132")}
+    ICONS = {"info": "info", "warning": "warning", "error": "error_circle",
+             "success": "checkmark_circle"}
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("noticeBar")
         lay = QHBoxLayout(self)
         lay.setContentsMargins(8, 4, 8, 4)
+        self.icon = QLabel()
+        self.icon.setFixedSize(20, 20)
+        lay.addWidget(self.icon, 0, Qt.AlignmentFlag.AlignTop)
         self.label = QLabel("")
         self.label.setWordWrap(True)
         self.label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -146,10 +153,10 @@ class NoticeBar(QFrame):
 
     def show_message(self, text: str, kind: str = "info",
                      action: tuple[str, Callable[[], None]] | None = None) -> None:
-        bg, fg = self.COLORS[kind]
         self.kind = kind
-        self.setStyleSheet(f"#noticeBar {{ background: {bg}; border: 1px solid {fg}; "
-                           f"border-radius: 4px; }} #noticeBar QLabel {{ color: {fg}; }}")
+        self.icon.setPixmap(icon(self.ICONS[kind]).pixmap(20, 20))
+        self.icon.setToolTip({"info": "Hinweis", "warning": "Achtung", "error": "Fehler",
+                              "success": "Erledigt"}[kind])
         self.label.setText(text)
         if action is None:
             self._action = None
@@ -179,6 +186,9 @@ class MainWindow(QMainWindow):
     def __init__(self, *, cache_dir: Path | None = None, encoder: str | None = None,
                  open_file: Callable[[Path], None] | None = None) -> None:
         super().__init__()
+        app = QApplication.instance()
+        if isinstance(app, QApplication):
+            apply_theme(app)
         self.cache_dir = cache_dir or default_cache_dir()
         self.forced_encoder = encoder
         self.open_file = open_file or (
@@ -216,13 +226,14 @@ class MainWindow(QMainWindow):
         self._duration_timer.setInterval(300)
         self._duration_timer.timeout.connect(self._start_duration)
         self._start_duration()
+        dark_title_bar(self)
 
     # --- Aufbau ----------------------------------------------------------------------
 
     def _build_ui(self) -> None:
         self.timeline = TimelineView()
+        self.timeline.setObjectName("timeline")
         self.timeline.setModel(self.model)
-        self.timeline.setMinimumWidth(260)
 
         self.item_panel = ItemPanel()
         self.project_panel = ProjectPanel()
@@ -232,20 +243,33 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(_scroll(self.project_panel), "Show")
         self.tabs.addTab(_scroll(self.music_panel), "Musik")
         self.tabs.tabBar().setExpanding(False)
-        self.still = StillPreview(self.cache_dir)
+        self.tabs.setDocumentMode(True)
         right = QWidget()
-        right.setMinimumWidth(320)
+        right.setObjectName("propertiesPane")
+        right.setMinimumWidth(300)
         right_lay = QVBoxLayout(right)
         right_lay.setContentsMargins(0, 0, 0, 0)
-        right_lay.setSpacing(4)
-        right_lay.addWidget(self.still)
         right_lay.addWidget(self.tabs, 1)
+
+        # Monitor in der Mitte: Standbild des markierten Elements, nimmt den meisten Platz ein
+        monitor = QWidget()
+        monitor.setObjectName("monitorPane")
+        monitor.setMinimumWidth(240)
+        mon_lay = QVBoxLayout(monitor)
+        mon_lay.setContentsMargins(0, 0, 0, 0)
+        mon_lay.setSpacing(0)
+        self.monitor_title = QLabel("Vorschau")
+        self.monitor_title.setObjectName("monitorTitle")
+        self.still = StillPreview(self.cache_dir)
+        mon_lay.addWidget(self.monitor_title)
+        mon_lay.addWidget(self.still, 1)
 
         self.notice = NoticeBar()
         left = QWidget()
+        left.setObjectName("rasterPane")
+        left.setMinimumWidth(260)
         left_lay = QVBoxLayout(left)
         left_lay.setContentsMargins(0, 0, 0, 0)
-        left_lay.addWidget(self.notice)
         self.empty_hint = QLabel(
             "Fügen Sie Fotos und Videos hinzu: „Ordner hinzufügen“ oben oder Dateien aus dem "
             "Explorer hierher ziehen. Die Reihenfolge ändern Sie, indem Sie Bilder in der "
@@ -257,11 +281,13 @@ class MainWindow(QMainWindow):
 
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.addWidget(left)
+        self.splitter.addWidget(monitor)
         self.splitter.addWidget(right)
-        self.splitter.setStretchFactor(0, 1)
-        self.splitter.setStretchFactor(1, 0)
+        for i, stretch in enumerate((0, 1, 0)):  # zusätzlicher Platz geht an den Monitor
+            self.splitter.setStretchFactor(i, stretch)
         self.splitter.setChildrenCollapsible(False)
-        self.splitter.setSizes([900, 380])
+        self.splitter.setHandleWidth(5)  # dünne Linie, aber gut zu greifen
+        self.splitter.setSizes([400, 600, 320])
 
         self.activity = ActivityPanel()
         self.render_row = self.activity.add_row(TaskRow("renderRow", "Video erstellen", 3))
@@ -269,8 +295,13 @@ class MainWindow(QMainWindow):
         self.video_row = self.activity.add_row(TaskRow("videoRow", "Videos umwandeln", 1))
         central = QWidget()
         lay = QVBoxLayout(central)
-        lay.setContentsMargins(4, 4, 4, 0)
-        lay.setSpacing(2)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        notice_box = QHBoxLayout()
+        notice_box.setContentsMargins(6, 6, 6, 6)
+        notice_box.addWidget(self.notice)
+        self.notice_box = notice_box
+        lay.addLayout(notice_box)
         lay.addWidget(self.splitter, 1)
         lay.addWidget(self.activity)
         self.setCentralWidget(central)
@@ -299,10 +330,14 @@ class MainWindow(QMainWindow):
         self.zoom.blockSignals(False)
 
     def _action(self, text: str, slot: Callable[[], object], shortcut: str | None = None,
-                icon: QStyle.StandardPixmap | None = None, tip: str | None = None) -> QAction:
+                icon_name: str | None = None, tip: str | None = None,
+                short: str | None = None) -> QAction:
+        """short: kurzer Text in der Werkzeugleiste (im Menü steht der volle Text)."""
         act = QAction(text, self)
-        if icon is not None:
-            act.setIcon(self.style().standardIcon(icon))
+        if icon_name is not None:
+            act.setIcon(icon(icon_name))
+        if short:
+            act.setIconText(short)
         if shortcut:
             act.setShortcut(QKeySequence(shortcut))
         if tip:
@@ -312,33 +347,33 @@ class MainWindow(QMainWindow):
         return act
 
     def _build_actions(self) -> None:
-        sp = QStyle.StandardPixmap
-        self.act_new = self._action("Neues Projekt", self.on_new, "Ctrl+N", sp.SP_FileIcon)
-        self.act_open = self._action("Öffnen …", self.on_open, "Ctrl+O", sp.SP_DialogOpenButton,
-                                     "Gespeichertes Projekt öffnen")
-        self.act_save = self._action("Speichern", self.on_save, "Ctrl+S", sp.SP_DialogSaveButton,
+        self.act_new = self._action("Neues Projekt", self.on_new, "Ctrl+N", "document_add")
+        self.act_open = self._action("Öffnen …", self.on_open, "Ctrl+O", "folder_open",
+                                     "Gespeichertes Projekt öffnen", "Öffnen")
+        self.act_save = self._action("Speichern", self.on_save, "Ctrl+S", "save",
                                      "Projekt speichern, um später weiterzuarbeiten")
         self.act_save_as = self._action("Speichern unter …", self.on_save_as, "Ctrl+Shift+S")
         self.act_quit = self._action("Beenden", self.close, "Alt+F4")
         self.act_add_folder = self._action(
-            "Ordner hinzufügen", self.on_add_folder, None, sp.SP_DirIcon,
-            "Alle Fotos und Videos eines Ordners (mit Unterordnern) hinzufügen")
+            "Ordner hinzufügen", self.on_add_folder, None, "folder_add",
+            "Alle Fotos und Videos eines Ordners (mit Unterordnern) hinzufügen", "Ordner")
         self.act_add_files = self._action(
-            "Dateien hinzufügen", self.on_add_files, "Ctrl+I", sp.SP_FileDialogNewFolder,
-            "Einzelne Fotos und Videos hinzufügen")
+            "Dateien hinzufügen", self.on_add_files, "Ctrl+I", "image_add",
+            "Einzelne Fotos und Videos hinzufügen", "Dateien")
         self.act_add_title = self._action(
-            "Titelkarte", self.add_title_card, None, sp.SP_FileDialogDetailedView,
-            "Titel mit Text auf Farbfläche oder Foto einfügen")
+            "Titelkarte", self.add_title_card, None, "text_t",
+            "Titel mit Text auf Farbfläche oder Foto einfügen", "Titel")
         self.act_add_music = self._action(
-            "Musik", self.on_add_music, None, sp.SP_MediaVolume, "Musikstücke hinzufügen")
+            "Musik", self.on_add_music, None, "music_note_2", "Musikstücke hinzufügen")
         self.act_remove = self._action("Markierte entfernen", self.remove_selected, None,
-                                       sp.SP_TrashIcon)
-        self.act_sort = self._action("Nach Aufnahmedatum sortieren", self.sort_by_date)
+                                       "delete")
+        self.act_sort = self._action("Nach Aufnahmedatum sortieren", self.sort_by_date, None,
+                                     "arrow_sort")
         self.act_preview = self._action(
-            "Vorschau", self.on_preview, "F5", sp.SP_MediaPlay,
-            "Markierte Elemente schnell in kleiner Größe (480p) ansehen")
+            "Vorschau", self.on_preview, "F5", "play",
+            "Markierte Elemente schnell in kleiner Größe (480p) als Video ansehen")
         self.act_export = self._action(
-            "Video erstellen", self.on_export, "Ctrl+E", sp.SP_DialogApplyButton,
+            "Video erstellen", self.on_export, "Ctrl+E", "arrow_export_ltr",
             "Die fertige Show als MP4-Video speichern")
 
         menu = self.menuBar()
@@ -361,6 +396,7 @@ class MainWindow(QMainWindow):
         tb = QToolBar("Werkzeuge")
         tb.setObjectName("mainToolbar")
         tb.setMovable(False)
+        tb.setIconSize(QSize(20, 20))
         tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         for a in (self.act_open, self.act_save):
             tb.addAction(a)
@@ -370,7 +406,21 @@ class MainWindow(QMainWindow):
             tb.addAction(a)
         tb.addSeparator()
         tb.addAction(self.act_preview)
-        tb.addAction(self.act_export)
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        tb.addWidget(spacer)
+        # Einziger hervorgehobener Knopf, rechts: dunkle Schrift auf Blau (Kontrast 4.8:1)
+        primary = QToolButton()
+        primary.setObjectName("primaryButton")
+        primary.setText("Video erstellen")
+        primary.setIcon(icon("arrow_export_ltr", "bg"))
+        primary.setIconSize(QSize(18, 18))
+        primary.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        primary.setToolTip(self.act_export.toolTip())
+        primary.clicked.connect(self.act_export.trigger)
+        self.act_export.changed.connect(lambda: primary.setEnabled(self.act_export.isEnabled()))
+        tb.addWidget(primary)
+        self.export_button = primary
         self.addToolBar(tb)
         self.toolbar = tb
 
@@ -413,7 +463,7 @@ class MainWindow(QMainWindow):
         self.project_panel.set_project(project)
         self.music_panel.set_project(project)
         self.item_panel.set_items(project, [])
-        self.still.show_item(project, None)
+        self._show_still([])
         self.dirty = False
         self.total_seconds = None
         self._update_title()
@@ -555,6 +605,8 @@ class MainWindow(QMainWindow):
         """Standbild des (ersten) markierten Elements."""
         items = self.selected_items() if items is None else items
         self.still.show_item(self.project, items[0] if items else None)
+        self.monitor_title.setText(
+            f"Vorschau: {self.item_panel.header.text()}" if items else "Vorschau")
 
     def _on_item_changed(self) -> None:
         self.model.refresh_rows(self.timeline.selected_rows())
@@ -589,7 +641,7 @@ class MainWindow(QMainWindow):
         items = [it for i, it in enumerate(self.project.items) if i not in rows]
         self.model.replace_items(self._apply_chapters(items))
         self.item_panel.set_items(self.project, [])
-        self.still.show_item(self.project, None)
+        self._show_still([])
         self.mark_dirty()
 
     def sort_by_date(self) -> None:

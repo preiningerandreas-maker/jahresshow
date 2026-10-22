@@ -9,7 +9,6 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFileDialog,
-    QFormLayout,
     QGridLayout,
     QGroupBox,
     QLabel,
@@ -21,6 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from slideshow.app.properties import form_layout
 from slideshow.core.ffmpeg import FFmpegError, probe
 from slideshow.core.importer import MUSIC_EXTS
 from slideshow.core.project import Project
@@ -75,7 +75,7 @@ class MusicPanel(QWidget):
         outer.addWidget(box, 1)
 
         sbox = QGroupBox("Lautstärke")
-        form = QFormLayout(sbox)
+        form = form_layout(sbox)
         self.volume = QSpinBox()
         self.volume.setRange(0, 200)
         self.volume.setSuffix(" %")

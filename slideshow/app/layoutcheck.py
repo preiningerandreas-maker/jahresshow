@@ -110,6 +110,8 @@ def clipped_widgets(window: QWidget) -> list[str]:
         hint = w.minimumSizeHint()
         if isinstance(w, QAbstractItemView | QPlainTextEdit):
             continue  # Listen und Textfelder rollen selbst
+        if isinstance(w, QProgressBar) and not w.isTextVisible():
+            continue  # schmaler Balken ohne Text: nichts, was abgeschnitten werden könnte
         if hint.isValid() and (w.width() < hint.width() or w.height() < hint.height()):
             problems.append(f"{describe(w)} ist zu klein: {w.width()}×{w.height()}, "
                             f"braucht {hint.width()}×{hint.height()}")

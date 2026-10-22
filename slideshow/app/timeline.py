@@ -41,6 +41,7 @@ from PySide6.QtGui import (
     QImage,
     QKeyEvent,
     QPainter,
+    QPainterPath,
     QPalette,
     QPen,
     QPixmap,
@@ -56,6 +57,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from slideshow.app.theme import RADIUS, color
 from slideshow.core.chapters import is_chapter_title
 from slideshow.core.edit import move_items
 from slideshow.core.importer import media_kind
@@ -72,14 +74,11 @@ MAX_QUEUE = 300
 SCROLL_PAUSE = 0.15  # Sekunden ohne Nachladen nach jeder Scrollbewegung
 
 KIND_LABELS = {"photo": "Foto", "video": "Video", "title": "Titel"}
+# Bildinhalt wie im Export (keine Theme-Farben): schwarze Ränder, Abdunkeln bei blur,
+# weißer Titeltext auf der Titelfarbe des Nutzers
 BLACK = QColor("#000000")
 DARKEN = QColor(0, 0, 0, 38)  # wie eq=brightness=-0.15 im Export
-WHITE = QColor("#FFFFFF")
-PLACEHOLDER = QColor("#D0D0D0")
-PLACEHOLDER_TEXT = QColor("#707070")
-BADGE = QColor(0, 0, 0, 150)
-DUPLICATE = QColor("#C62828")
-CHAPTER_PEN = QPen(QColor("#E0A030"), 3)
+TITLE_TEXT = QColor("#FFFFFF")
 
 
 def item_label(item: Item) -> str:
@@ -442,13 +441,20 @@ def fit_rect(src_w: float, src_h: float, frame: QRectF, cover: bool) -> QRectF:
     return QRectF(frame.center().x() - w / 2, frame.center().y() - h / 2, w, h)
 
 
+def rounded(frame: QRect) -> QPainterPath:
+    path = QPainterPath()
+    path.addRoundedRect(QRectF(frame), RADIUS, RADIUS)
+    return path
+
+
 def paint_fit(painter: QPainter, frame: QRect, pm: QPixmap, fit: str,
               blur: Callable[[], QPixmap]) -> None:
     """Vorschaubild im 16:9-Rahmen wie im Export: blur, black oder crop."""
     size = pm.deviceIndependentSize()
     f = QRectF(frame)
     painter.save()
-    painter.setClipRect(frame)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setClipPath(rounded(frame))
     painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
     if fit == "crop":
         painter.drawPixmap(fit_rect(size.width(), size.height(), f, True), pm,
@@ -494,20 +500,17 @@ class TileDelegate(QStyledItemDelegate):
         tile = model.tile(index.row())
         pm = model.tile_pixmap(tile)
         painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         r: QRect = option.rect.adjusted(4, 4, -4, -4)  # type: ignore[attr-defined]
         pal: QPalette = option.palette  # type: ignore[attr-defined]
-        if option.state & QStyle.StateFlag.State_Selected:  # type: ignore[attr-defined]
-            painter.fillRect(r, pal.color(QPalette.ColorRole.Highlight).lighter(160))
-            painter.setPen(QPen(pal.color(QPalette.ColorRole.Highlight), 2))
-            painter.drawRect(r.adjusted(1, 1, -1, -1))
 
         tw, th = self.thumb_w, self.thumb_h
         thumb = QRect(r.x() + (r.width() - tw) // 2, r.y() + 4, tw, th)
         if pm is not None:
             paint_fit(painter, thumb, pm, tile.fit, lambda: model.blur_pixmap(tile, pm))
         elif tile.kind == "title" and tile.thumb_key is None:
-            painter.fillRect(thumb, QColor(tile.background))
-            painter.setPen(WHITE)
+            painter.fillPath(rounded(thumb), QColor(tile.background))
+            painter.setPen(TITLE_TEXT)
             f = QFont(option.font)  # type: ignore[attr-defined]
             f.setBold(True)
             painter.setFont(f)
@@ -515,27 +518,31 @@ class TileDelegate(QStyledItemDelegate):
                              Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, tile.label)
             painter.setFont(option.font)  # type: ignore[attr-defined]
         else:
-            painter.fillRect(thumb, PLACEHOLDER)
-            painter.setPen(PLACEHOLDER_TEXT)
+            painter.fillPath(rounded(thumb), color("input"))
+            painter.setPen(color("text"))
             painter.drawText(thumb, Qt.AlignmentFlag.AlignCenter,
                              "Video" if tile.kind == "video" else "…")
         if tile.kind == "video":
             # Kleines Abspielzeichen als Kennzeichen für Videos
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(BADGE)
+            painter.setBrush(color("bg", 220))
             badge = QRect(thumb.x() + 4, thumb.bottom() - 22, 26, 18)
             painter.drawRoundedRect(badge, 3, 3)
-            painter.setBrush(WHITE)
+            painter.setBrush(color("text"))
             cx, cy = badge.center().x(), badge.center().y()
             painter.drawPolygon(QPolygonF([QPointF(cx - 4, cy - 5), QPointF(cx - 4, cy + 5),
                                            QPointF(cx + 5, cy)]))
         if tile.duplicate:
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(DUPLICATE)
-            badge = QRect(thumb.right() - 58, thumb.y() + 4, 54, 18)
+            painter.setPen(color("text"))
+            painter.setBrush(color("bg"))
+            badge = QRect(thumb.right() - 60, thumb.y() + 4, 56, 18)
             painter.drawRoundedRect(badge, 3, 3)
-            painter.setPen(WHITE)
             painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, "doppelt")
+        if option.state & QStyle.StateFlag.State_Selected:  # type: ignore[attr-defined]
+            # Auswahl als blauer Rand um die ganze Kachel, ohne Füllung
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(color("accent"), 2))
+            painter.drawRoundedRect(QRectF(r).adjusted(1, 1, -1, -1), RADIUS, RADIUS)
 
         painter.setPen(pal.color(QPalette.ColorRole.Text))
         fm = option.fontMetrics  # type: ignore[attr-defined]
@@ -546,9 +553,6 @@ class TileDelegate(QStyledItemDelegate):
         painter.setPen(pal.color(QPalette.ColorRole.PlaceholderText))
         painter.drawText(sub_r, Qt.AlignmentFlag.AlignLeft,
                          fm.elidedText(tile.subtitle, Qt.TextElideMode.ElideRight, sub_r.width()))
-        if tile.chapter:
-            painter.setPen(CHAPTER_PEN)
-            painter.drawLine(r.topLeft(), r.bottomLeft())
         painter.restore()
 
 
