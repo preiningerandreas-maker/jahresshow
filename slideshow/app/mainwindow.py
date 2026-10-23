@@ -44,6 +44,7 @@ from slideshow.app.activity import ActivityPanel, TaskRow
 from slideshow.app.icons import icon
 from slideshow.app.music import MusicPanel, format_minutes
 from slideshow.app.properties import ItemPanel, ProjectPanel
+from slideshow.app.renderdialog import RenderDialog
 from slideshow.app.still import StillPreview
 from slideshow.app.tasks import Task, VideoPrep
 from slideshow.app.theme import apply_theme, dark_title_bar
@@ -315,7 +316,6 @@ class MainWindow(QMainWindow):
         self.splitter.setSizes([400, 600, 320])
 
         self.activity = ActivityPanel()
-        self.render_row = self.activity.add_row(TaskRow("renderRow", "Video erstellen", 3))
         self.import_row = self.activity.add_row(TaskRow("importRow", "Einlesen", 2))
         self.video_row = self.activity.add_row(TaskRow("videoRow", "Videos umwandeln", 1))
         central = QWidget()
@@ -330,6 +330,8 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.splitter, 1)
         lay.addWidget(self.activity)
         self.setCentralWidget(central)
+        # Export und Vorschau: eigenes Fenster mittig auf dem Bildschirm (sperrt das Hauptfenster)
+        self.render_dialog = RenderDialog(self)
 
         self.summary_label = QLabel("")
         self.statusBar().addWidget(self.summary_label, 1)
@@ -1057,9 +1059,8 @@ class MainWindow(QMainWindow):
         task = Task(run, "render", self)
         self._render_task = task
         self._set_render_actions(False)
-        self.render_row.start(f"{label} …", task.cancel)
-        task.progress.connect(lambda msg, frac: self.render_row.update_progress(
-            f"{label}: {msg}", frac))
+        self.render_dialog.start(label, task.cancel)
+        task.progress.connect(self.render_dialog.update_progress)
         task.done.connect(lambda r: self._render_done(r, opts))
         task.failed.connect(self._render_failed)
         task.cancelled.connect(lambda: self.notice.show_message(
@@ -1069,7 +1070,7 @@ class MainWindow(QMainWindow):
         return task.start()
 
     def _render_finished(self) -> None:
-        self.render_row.finish()
+        self.render_dialog.finish()
         self._set_render_actions(True)
 
     def _render_failed(self, e: object) -> None:

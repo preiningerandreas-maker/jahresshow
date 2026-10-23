@@ -65,7 +65,7 @@ def wait_import(qtbot, w: MainWindow, paths: list[Path], timeout: int = 60_000) 
 
 
 def wait_render(qtbot, w: MainWindow, timeout: int = 180_000) -> None:  # noqa: ANN001
-    qtbot.waitUntil(lambda: not w.rendering and not w.render_row.active, timeout=timeout)
+    qtbot.waitUntil(lambda: not w.rendering and not w.render_dialog.active, timeout=timeout)
 
 
 def copy_media(synthetic: Path, target: Path, *names: str) -> list[Path]:
@@ -388,20 +388,27 @@ def test_export_start_and_cancel(qtbot, window: MainWindow, synthetic: Path,  # 
     out = umlaut_dir / "Show Ö.mp4"
     task = window.export_to(out, confirm=False)
     assert task is not None and window.rendering
-    assert window.render_row.active and window.activity.isVisible()
     assert not window.act_export.isEnabled() and not window.act_preview.isEnabled()
-    qtbot.waitUntil(lambda: window.render_row.bar.value() > 0, timeout=60_000)
-    # Oberfläche bleibt bedienbar, während im Hintergrund gerendert wird
-    photo = next(i for i, it in enumerate(window.project.items) if it.kind == "photo")
-    window.timeline.select_rows([photo])
-    assert window.item_panel.header.text().startswith("Foto")
+    # Fortschritt im eigenen Fenster, nicht in der Aufgabenzeile unten
+    dialog = window.render_dialog
+    assert dialog.isVisible() and dialog.active and not window.activity.isVisible()
+    assert dialog.title.text() == "Video wird erstellt"
+    # mittig auf dem Bildschirm, sperrt das Hauptfenster
+    center = window.screen().availableGeometry().center()
+    assert abs(dialog.frameGeometry().center().x() - center.x()) <= 1
+    assert abs(dialog.frameGeometry().center().y() - center.y()) <= 1
+    assert dialog.windowModality() == Qt.WindowModality.WindowModal
+    assert QApplication.activeModalWidget() is dialog
+    qtbot.waitUntil(lambda: dialog.bar.value() > 0, timeout=60_000)
     # Fortschritt ist im Balken sichtbar, Statustext ohne Gedankenstrich
-    assert window.activity.bar.value() > 0
-    assert window.activity.bar.text().endswith("%")
-    assert "–" not in window.activity.summary.text()
-    assert window.activity.primary is window.render_row
-    qtbot.mouseClick(window.activity.cancel_button, Qt.MouseButton.LeftButton)
+    assert dialog.bar.text().endswith("%") and dialog.bar.percent.text().endswith("%")
+    assert dialog.status.text() and "–" not in dialog.status.text()
+    # Escape beendet einen langen Export nicht versehentlich
+    qtbot.keyClick(dialog, Qt.Key.Key_Escape)
+    assert dialog.isVisible() and window.rendering
+    qtbot.mouseClick(dialog.cancel_button, Qt.MouseButton.LeftButton)
     wait_render(qtbot, window, timeout=30_000)
+    assert not dialog.isVisible() and QApplication.activeModalWidget() is None
     assert window.last_result is None
     assert not out.exists()
     assert not list(umlaut_dir.glob("*.part*"))
@@ -437,7 +444,11 @@ def test_preview_shows_notice_when_originals_are_used(qtbot, window: MainWindow,
     window.timeline.select_rows(rows)
     assert window.preview_range() == (rows[0] + 1, rows[0] + 1)
     assert window.on_preview() is not None
+    # Auch die Vorschau zeigt ihren Fortschritt im gelben Fenster, nicht in der Zeile unten
+    assert window.render_dialog.isVisible() and not window.activity.isVisible()
+    assert window.render_dialog.title.text().startswith(f"Vorschau von Element {rows[0] + 1}")
     wait_render(qtbot, window)
+    assert not window.render_dialog.isVisible()
     assert opened and opened[-1].is_file()  # Vorschau wird geöffnet
     assert window.notice.isVisible() and window.notice.kind == "warning"
     assert "Original" in window.notice.label.text()

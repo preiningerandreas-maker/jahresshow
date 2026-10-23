@@ -36,7 +36,8 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_tokens_as_specified() -> None:
     assert T == {"bg": "#1E1E1E", "area": "#252525", "input": "#2E2E2E", "line": "#3A3A3A",
                  "text": "#D4D4D4", "muted": "#969696", "accent": "#1F6FC5",
-                 "on_accent": "#FFFFFF"}
+                 "on_accent": "#FFFFFF", "popup": "#F2C230", "on_popup": "#1A1A1A",
+                 "popup_track": "#FBE7A1"}
 
 
 def test_contrast_formula_matches_wcag_examples() -> None:
@@ -300,6 +301,36 @@ def test_progress_bar_filled_in_every_windows_style(qtbot) -> None:  # noqa: ANN
             assert bar.percent.text() == "50 %"
     finally:
         theme.apply_theme(app)
+
+
+def test_render_popup_is_yellow_with_dark_text(qtbot) -> None:  # noqa: ANN001
+    """Fortschrittsfenster: gelbe Fläche, dunkle Schrift, dunkler Balken auf hellem Gelb."""
+    from PySide6.QtWidgets import QMainWindow
+
+    from slideshow.app.renderdialog import RenderDialog
+
+    assert contrast(T["on_popup"], T["popup"]) >= 4.5
+    # Balken (Nicht-Text): Füllung gegen leeren Teil mindestens 3:1
+    assert contrast(T["on_popup"], T["popup_track"]) >= 3
+    app = QApplication.instance()
+    assert isinstance(app, QApplication)
+    theme.apply_theme(app)
+    owner = QMainWindow()
+    qtbot.addWidget(owner)
+    dialog = RenderDialog(owner)
+    dialog.start("Video wird erstellt", lambda: None)
+    dialog.update_progress("Element 12 von 240 wird vorbereitet", 0.5)
+    img = dialog.grab().toImage()
+    assert img.pixelColor(4, img.height() // 2).name().upper() == T["popup"]
+    assert img.pixelColor(0, 0).name().upper() == T["on_popup"]  # Rand
+    assert dialog.title.palette().color(dialog.title.foregroundRole()).name().upper() \
+        == T["on_popup"]
+    bar = dialog.bar.grab().toImage()
+    y = bar.height() // 2
+    assert bar.pixelColor(bar.width() // 4, y).name().upper() == T["on_popup"]
+    assert bar.pixelColor(bar.width() * 9 // 10, y).name().upper() == T["popup_track"]
+    assert dialog.bar.percent.text() == "50 %"
+    dialog.finish()
 
 
 def test_theme_applies_dark_palette(themed_window: MainWindow) -> None:

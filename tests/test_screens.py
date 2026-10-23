@@ -65,10 +65,29 @@ def test_window_fits_without_clipped_controls(width: int, height: int, scale: fl
     for name, state in report["export_button"].items():
         assert state == {"visible": True, "in_window": True, "in_toolbar": True,
                          "in_overflow": False}, name
-    # Element (Foto, Video mit allen Aufgaben, aufgeklappt, Titel), Show, Musik, Zoom klein/groß
-    assert len(report["files"]) == 8
-    for f in report["files"]:
+    # Fortschrittsfenster von Export und Vorschau passt mit Platz auf den Bildschirm
+    dialog = report["render_dialog"]
+    assert dialog["problems"] == [] and dialog["modal"]
+    w, h = dialog["size"]
+    assert w <= width - 100 and h <= height - TASKBAR_AND_TITLE - 100
+    # Element (Foto, Video mit allen Aufgaben, aufgeklappt, Titel), Show, Musik, Zoom klein/groß,
+    # dazu das Fortschrittsfenster
+    assert len(report["files"]) == 9
+    *window_files, dialog_file = report["files"]
+    for f in window_files:
         assert Path(f).is_file() and Path(f).stat().st_size > 10_000
+    # Das Fortschrittsbild ist klein (viel einfarbige Fläche), daher Inhalt statt Dateigröße:
+    # Pixelgröße passend zur Skalierung, gelbe Fläche, dunkle Schrift und Balken
+    from PIL import Image
+
+    from slideshow.app.theme import TOKENS
+
+    assert dialog_file.endswith("-fortschritt.png")
+    with Image.open(dialog_file) as im:
+        assert im.size == (round(w * scale), round(h * scale))
+        pixels = im.convert("RGB").getcolors(1 << 20) or []
+        colors = {"#{:02X}{:02X}{:02X}".format(*rgb) for _n, rgb in pixels}
+    assert {TOKENS["popup"], TOKENS["on_popup"], TOKENS["popup_track"]} <= colors
 
 
 def test_layout_check_detects_clipping(qtbot, tmp_path: Path) -> None:  # noqa: ANN001
