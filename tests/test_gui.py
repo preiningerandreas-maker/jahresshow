@@ -983,3 +983,76 @@ def test_main_window_never_narrower_than_toolbar(qtbot, window: MainWindow) -> N
     assert window.width() >= tb.sizeHint().width()
     assert toolbar_button_state(window, window.export_button) == {
         "visible": True, "in_window": True, "in_toolbar": True, "in_overflow": False}
+
+
+@pytest.fixture
+def auto_window(qtbot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):  # noqa: ANN001, ANN201
+    """Fenster ohne erzwungenen Kodierer; der Probe-Encode meldet Quick Sync als funktionsfähig."""
+    from slideshow.render import encoder
+
+    monkeypatch.setattr(encoder, "probe_encoder", lambda name: name in ("h264_qsv", "libx264"))
+    w = MainWindow(cache_dir=tmp_path / "cache", open_file=lambda _p: None)
+    qtbot.addWidget(w)
+    yield w
+    w.shutdown()
+
+
+def test_gpu_setting_in_extras_menu(auto_window: MainWindow) -> None:
+    from slideshow.render.encoder import GPU_NEVER, load_prefs, remember_failure
+
+    w = auto_window
+    menus = [a.text() for a in w.menuBar().actions()]
+    assert "E&xtras" in menus
+    texts = [a.text() for a in w.gpu_menu.actions() if not a.isSeparator()]
+    assert texts[:2] == ["Automatisch", "Nie (nur Prozessor)"]
+    assert w.gpu_actions["auto"].isChecked() and not w.act_gpu_retry.isVisible()
+    assert w.encoder_for_jobs() == "h264_qsv"
+
+    w.gpu_actions[GPU_NEVER].trigger()
+    assert load_prefs(w.cache_dir).mode == GPU_NEVER
+    assert w.encoder_for_jobs() == "libx264"
+    w.gpu_actions["auto"].trigger()
+    assert w.encoder_for_jobs() == "h264_qsv"
+
+    remember_failure(w.cache_dir, "h264_qsv")
+    w.update_gpu_menu()
+    assert w.act_gpu_retry.isVisible() and "Quick Sync" in w.act_gpu_retry.text()
+    assert w.encoder_for_jobs() == "libx264"
+    w.act_gpu_retry.trigger()
+    assert load_prefs(w.cache_dir).failed == {} and not w.act_gpu_retry.isVisible()
+    assert "wieder verwendet" in w.notice.label.text()
+
+
+@pytest.mark.slow
+def test_export_summary_reports_gpu_failure(qtbot, auto_window: MainWindow,  # noqa: ANN001
+                                            synthetic: Path, umlaut_dir: Path,
+                                            monkeypatch: pytest.MonkeyPatch) -> None:
+    import re
+
+    from test_fallback import FlakyGpu
+
+    from slideshow.core import normalize
+    from slideshow.render import assemble, segment
+
+    fake = FlakyGpu(fail_at=3, after_frames=8)
+    for module in (segment, assemble, normalize):
+        monkeypatch.setattr(module, "run_ffmpeg", fake)
+    w = auto_window
+    p = photos_project(synthetic, umlaut_dir)
+    for it in p.items:
+        it.duration = 1.0
+    w.set_project(p, None)
+    out = umlaut_dir / "Panne Ö.mp4"
+    assert w.export_to(out, confirm=False) is not None
+    wait_render(qtbot, w)
+
+    assert out.is_file() and w.last_result is not None
+    text = w.notice.label.text()
+    assert w.notice.kind == "warning" and "Fertig" in text
+    m = re.search(r"Grafikkarte hat beim Kodieren versagt, ab Element (\d+) mit Prozessor "
+                  r"weitergerechnet\. Betroffen war „([^“]+)“", text)
+    assert m is not None, text
+    # Die Nummer ist die aus der Zeitleiste
+    item = w.project.items[int(m.group(1)) - 1]
+    assert item.path is not None and Path(item.path).name == m.group(2)
+    assert fake.qsv_calls == 3

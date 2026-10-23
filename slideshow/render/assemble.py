@@ -17,6 +17,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import TypeVar
 
 from slideshow.core.chapters import chapter_title, is_chapter_title
 from slideshow.core.ffmpeg import Cancelled, FFmpegError, run_ffmpeg
@@ -53,7 +54,15 @@ from slideshow.render.cache import (
     make_key,
     tmp_path,
 )
-from slideshow.render.encoder import bitrates, detect_encoder, encoder_args
+from slideshow.render.encoder import (
+    CPU_ENCODER,
+    EncoderChoice,
+    bitrates,
+    choose_encoder,
+    encoder_args,
+    is_hardware,
+    remember_failure,
+)
 from slideshow.render.segment import SAMPLES_PER_FRAME, RenderConfig, render_segment
 
 log = logging.getLogger(__name__)
@@ -64,6 +73,8 @@ FAT32_LIMIT = 4 * 1024**3
 
 StatusCallback = Callable[[str, float], None]
 """Wird mit Statustext und Gesamtfortschritt (0..1) aufgerufen."""
+
+T = TypeVar("T")
 
 
 class RenderError(RuntimeError):
@@ -206,6 +217,9 @@ class RenderResult:
     # erst beim Export als leicht beschädigt erkannt und trotzdem verwendet
     minor: list[SkippedFile] = field(default_factory=list)
     dropped_titles: list[str] = field(default_factory=list)  # Zwischentitel leerer Kapitel
+    # Grafikkarte hat versagt (in diesem Lauf oder früher): Hinweis für die Zusammenfassung
+    encoder_note: str | None = None
+    fallback_element: int | None = None  # ab diesem Element hat der Prozessor gerechnet
 
     @property
     def duration(self) -> float:
@@ -293,6 +307,48 @@ def damaged_at_render(path: Path, reason: str) -> SkippedFile:
     return SkippedFile(path, reason, readable)
 
 
+class EncoderFallback:
+    """Kodierer eines Laufs. Versagt die Grafikkarte bei einem Schritt, wird er mit dem
+    Prozessor wiederholt, und der Rest des Laufs bleibt beim Prozessor. Abbruch nur, wenn
+    auch der Prozessor scheitert. Die Panne wird für dieses Gerät gemerkt."""
+
+    def __init__(self, encoder: str, cache_dir: Path) -> None:
+        self.encoder = encoder
+        self.cache_dir = cache_dir
+        self.element: int | None = None
+        self.note: str | None = None
+
+    def run(self, step: Callable[[str], T], element: int, source: str) -> T:
+        """step(kodierer) ausführen; element und source benennen den Schritt für Meldungen."""
+        failed = self.encoder
+        try:
+            return step(failed)
+        except FFmpegError as err:
+            if not is_hardware(failed):
+                raise
+            log.warning("%s hat bei Element %d %s versagt, Wiederholung mit dem Prozessor: %s",
+                        failed, element, source, err)
+            hw_error = err
+        result = step(CPU_ENCODER)  # scheitert auch das, bricht der Export ab
+        self.failed(failed, hw_error, element, source)
+        return result
+
+    def failed(self, encoder: str, err: FFmpegError, element: int, source: str) -> None:
+        """Der Hardware-Kodierer hat versagt, der Prozessor hat es geschafft."""
+        log.warning("%s hat bei Element %d %s versagt, weiter mit dem Prozessor: %s",
+                    encoder, element, source, err)
+        self.encoder = CPU_ENCODER
+        if self.element is None:
+            self.element = element
+            self.note = (f"Grafikkarte hat beim Kodieren versagt, ab Element {element} mit "
+                         f"Prozessor weitergerechnet. Betroffen war {source}. Beim nächsten "
+                         "Export rechnet gleich der Prozessor.")
+        try:
+            remember_failure(self.cache_dir, encoder)
+        except OSError as e:
+            log.warning("Panne der Grafikkarte konnte nicht gespeichert werden: %s", e)
+
+
 def render_project(
     project: Project,
     opts: RenderOptions,
@@ -301,6 +357,8 @@ def render_project(
     cancel: threading.Event | None = None,
 ) -> RenderResult:
     started = time.perf_counter()
+    # Nummern wie in der Zeitleiste, auch bei Vorschau-Abschnitt und übersprungenen Elementen
+    numbers = {id(it): i + 1 for i, it in enumerate(project.items)}
     project = select_section(project, opts.first, opts.last)
     if not project.items:
         raise RenderError("Das Projekt enthält keine Elemente.")
@@ -327,14 +385,22 @@ def render_project(
     if opts.preview:
         width, height = PREVIEW_SIZE
         # 480p ist mit dem Prozessor schnell genug und läuft überall gleich
-        encoder = detect_encoder(cache_dir, opts.encoder) if opts.encoder else "libx264"
+        choice = (choose_encoder(cache_dir, opts.encoder) if opts.encoder
+                  else EncoderChoice(CPU_ENCODER))
     else:
         width, height = RESOLUTIONS[project.settings.resolution]
-        encoder = detect_encoder(cache_dir, opts.encoder)
-    cfg = RenderConfig(width, height, encoder, cache_dir, allow_original=opts.preview)
+        choice = choose_encoder(cache_dir, opts.encoder)
+    gpu = EncoderFallback(choice.name, cache_dir)
+    cfg = RenderConfig(width, height, choice.name, cache_dir, allow_original=opts.preview)
 
-    result = RenderResult(opts.output, encoder, 0, skipped=skipped,
-                          dropped_titles=dropped_titles)
+    result = RenderResult(opts.output, choice.name, 0, skipped=skipped,
+                          dropped_titles=dropped_titles, encoder_note=choice.note)
+
+    def number(item: Item) -> int:
+        return numbers[id(item)]
+
+    def source(item: Item) -> str:
+        return describe_file(project.resolve(item.path)) if item.path else "eine Titelkarte"
 
     def emit(msg: str, frac: float) -> None:
         if status:
@@ -380,17 +446,22 @@ def render_project(
                  norm_share * (k + p.fraction) / len(missing))
 
         emit(label, norm_share * k / len(missing))
+        users = [it for it in project.items if it.path and project.resolve(it.path) == src]
+
+        def norm_failed(err: FFmpegError, failed: str = gpu.encoder,
+                        element: int = number(users[0]), src: Path = src) -> None:
+            gpu.failed(failed, err, element, describe_file(src))
+
         try:
-            normalize_video(src, cache_dir, encoder=encoder, progress=norm_progress,
-                            cancel=cancel)
+            normalize_video(src, cache_dir, encoder=gpu.encoder, progress=norm_progress,
+                            cancel=cancel, on_encoder_failure=norm_failed)
         except FFmpegError as err:
             # Video lässt sich nicht lesen: überspringen statt den ganzen Export abbrechen
-            log.warning("Video übersprungen: %s: %s", src, err)
+            log.warning("Video übersprungen (Element %d %s): %s", number(users[0]),
+                        describe_file(src), err)
             add_skipped(skipped, SkippedFile(
                 src, "Video lässt sich nicht umwandeln (beschädigt oder unbekanntes Format)"))
-            project = without(project, [it for it in project.items
-                                        if it.path and project.resolve(it.path) == src],
-                              dropped_titles)
+            project = without(project, users, dropped_titles)
             check_left()
             continue
         result.videos_normalized += 1
@@ -416,9 +487,15 @@ def render_project(
                 report(label, 0.45 * (base + min(sec * FPS, n)) / total)
 
             report(label, 0.45 * base / total)
+
+            def segment(enc: str, e: TimelineEntry = e, project: Project = project,
+                        seg_progress: Callable[[float], None] = seg_progress
+                        ) -> tuple[Path, bool]:
+                return render_segment(project, e, replace(cfg, encoder=enc),
+                                      progress=seg_progress, cancel=cancel)
+
             try:
-                path, cached = render_segment(project, e, cfg, progress=seg_progress,
-                                              cancel=cancel)
+                path, cached = gpu.run(segment, number(e.item), source(e.item))
             except DamagedFile as err:
                 info = damaged_at_render(err.path, err.reason)
                 if e.item.damage is None and readable_at_least(info.readable,
@@ -427,14 +504,15 @@ def render_project(
                     add_skipped(result.minor, info)
                     marked = (e.item, replace(e.item, damage=info.reason,
                                               damage_readable=info.readable))
+                    numbers[id(marked[1])] = number(e.item)
                 else:
                     log.warning("Element übersprungen: %s", err)
                     add_skipped(skipped, info)
                     bad = e.item
                 break
             except (FFmpegError, OSError, ValueError) as err:
-                where = f" {describe_file(project.resolve(e.item.path))}" if e.item.path else ""
-                raise RenderError(f"Fehler bei Element {e.index + 1}{where}: {err}") from err
+                raise RenderError(
+                    f"Fehler bei Element {number(e.item)} {source(e.item)}: {err}") from err
             seg_paths[e.index] = path
             segments_cached += cached
             done += e.frames
@@ -457,13 +535,11 @@ def render_project(
             "USB-Stick mit FAT32."
         )
 
-    final_args = encoder_args(encoder, height)
-    block_files: list[Path] = []
     block_dir = cache_dir / "blocks"
     block_dir.mkdir(parents=True, exist_ok=True)
-    done = 0
-    for bi, block in enumerate(blocks):
-        check_cancel()
+
+    def encode_block(enc: str, bi: int, block: Block, base: int) -> tuple[Path, bool]:
+        final_args = encoder_args(enc, height)
         key = make_key({
             "type": "block",
             "segments": [seg_paths[p.entry.index].stem for p in block.parts],
@@ -472,32 +548,60 @@ def render_project(
             "encoder": final_args,
         })
         out = block_dir / f"{key}.mp4"
-        block_files.append(out)
-        label = f"Abschnitt {bi + 1} von {len(blocks)} wird zusammengesetzt"
         if out.is_file():
-            result.blocks_cached += 1
-        else:
-            base = done
+            return out, True
+        label = f"Abschnitt {bi + 1} von {len(blocks)} wird zusammengesetzt"
 
-            def blk_progress(sec: float, base: int = base, n: int = block.frames,
-                             label: str = label) -> None:
-                report(label, 0.45 + 0.45 * (base + min(sec * FPS, n)) / total)
+        def blk_progress(sec: float) -> None:
+            report(label, 0.45 + 0.45 * (base + min(sec * FPS, block.frames)) / total)
 
-            report(label, 0.45 + 0.45 * base / total)
-            args: list[str] = []
-            for p in block.parts:
-                args += ["-threads", "2", "-i", str(seg_paths[p.entry.index])]
-            tmp = tmp_path(out)
+        report(label, 0.45 + 0.45 * base / total)
+        args: list[str] = []
+        for p in block.parts:
+            args += ["-threads", "2", "-i", str(seg_paths[p.entry.index])]
+        tmp = tmp_path(out)
+        try:
+            run_ffmpeg([*args, "-filter_complex", block_graph(block),
+                        "-map", "[vout]", "-map", "[aout]",
+                        "-frames:v", str(block.frames), *final_args,
+                        "-c:a", "flac", str(tmp)],
+                       progress=blk_progress, cancel=cancel)
+            commit_tmp(tmp, out)
+        finally:
+            cleanup_tmp(tmp)
+        return out, False
+
+    while True:
+        block_encoder = gpu.encoder
+        block_files: list[Path] = []
+        result.blocks_cached = 0
+        done = 0
+        for bi, block in enumerate(blocks):
+            check_cancel()
+            # Elemente, die dieser Abschnitt zeigt (ohne Vorgriff auf den nächsten)
+            shown = [p.entry.item for p in block.parts if p.head is None]
+            first = shown[0]
+            span = (f"Element {number(first)}" if len(shown) == 1
+                    else f"Element {number(first)} bis {number(shown[-1])}")
+
+            def step(enc: str, bi: int = bi, block: Block = block,
+                     base: int = done) -> tuple[Path, bool]:
+                return encode_block(enc, bi, block, base)
+
             try:
-                run_ffmpeg([*args, "-filter_complex", block_graph(block),
-                            "-map", "[vout]", "-map", "[aout]",
-                            "-frames:v", str(block.frames), *final_args,
-                            "-c:a", "flac", str(tmp)],
-                           progress=blk_progress, cancel=cancel)
-                commit_tmp(tmp, out)
-            finally:
-                cleanup_tmp(tmp)
-        done += block.frames
+                out, hit = gpu.run(step, number(first), source(first))
+            except (FFmpegError, OSError) as err:
+                raise RenderError(f"Fehler bei Abschnitt {bi + 1} ({span}, beginnt mit "
+                                  f"{source(first)}): {err}") from err
+            block_files.append(out)
+            result.blocks_cached += hit
+            done += block.frames
+        if gpu.encoder == block_encoder:
+            break
+        # Die Grafikkarte hat erst bei den Abschnitten versagt: Alle Abschnitte müssen vom
+        # selben Kodierer stammen, sonst passen sie beim Aneinanderhängen ohne neu zu
+        # kodieren nicht sicher zusammen. Schon mit dem Prozessor fertige kommen aus dem Cache.
+        log.info("Abschnitte werden mit dem Prozessor neu zusammengesetzt")
 
     check_cancel()
     report("Musik wird vorbereitet", 0.9)
@@ -536,5 +640,8 @@ def render_project(
         cleanup_tmp(concat_list)
 
     report("Fertig", 1.0)
+    result.encoder = gpu.encoder
+    if gpu.note is not None:
+        result.encoder_note, result.fallback_element = gpu.note, gpu.element
     result.seconds = time.perf_counter() - started
     return result
