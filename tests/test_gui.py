@@ -802,12 +802,13 @@ def test_status_texts_without_dashes(qtbot, window: MainWindow, synthetic: Path,
 
 
 def damaged_files(folder: Path) -> dict[str, Path]:
-    from test_damaged import garbage, make_photo, truncated
+    from test_damaged import garbage, make_photo, slightly_cut, truncated
 
     good = make_photo(folder / "20260301_100000 gut.jpg")
     return {"good": good,
             "cut": truncated(good, folder / "20260302_100000 abgeschnitten Ö.jpg", 0.95),
-            "garbage": garbage(folder / "20260303_100000 Datenmüll.jpg")}
+            "garbage": garbage(folder / "20260303_100000 Datenmüll.jpg"),
+            "minor": slightly_cut(folder / "20260304_100000 leicht beschädigt.jpg")}
 
 
 def row_of(w: MainWindow, path: Path) -> int:
@@ -822,12 +823,20 @@ def test_damaged_files_marked_and_named(qtbot, window: MainWindow,  # noqa: ANN0
     text = window.notice.label.text()
     assert window.notice.kind == "warning"
     assert "2 beschädigte Datei(en) sind in der Zeitleiste mit „beschädigt“ markiert" in text
-    for key in ("cut", "garbage"):
+    assert "1 leicht beschädigte Datei(en) sind vollständig lesbar und werden verwendet" in text
+    for key in ("cut", "garbage", "minor"):
         p = files[key]
         assert f"„{p.name}“ ({p})" in text  # Hinweis nennt Name und Pfad
     model = window.model
     flags = {key: model.tile(row_of(window, p)).damaged for key, p in files.items()}
-    assert flags == {"good": False, "cut": True, "garbage": True}
+    assert flags == {"good": False, "cut": True, "garbage": True, "minor": False}
+    minor_flags = {key: model.tile(row_of(window, p)).slightly_damaged
+                   for key, p in files.items()}
+    assert minor_flags == {"good": False, "cut": False, "garbage": False, "minor": True}
+    minor_row = row_of(window, files["minor"])
+    tip = model.data(model.index(minor_row), Qt.ItemDataRole.ToolTipRole)
+    assert "Datei leicht beschädigt, vollständig lesbar" in tip and "übersprungen" not in tip
+    assert not window.project.items[minor_row].skip_damaged
     cut_row = row_of(window, files["cut"])
     tip = model.data(model.index(cut_row), Qt.ItemDataRole.ToolTipRole)
     assert "Beschädigt: Datei ist abgeschnitten" in tip and "übersprungen" in tip
@@ -848,6 +857,11 @@ def test_damaged_files_marked_and_named(qtbot, window: MainWindow,  # noqa: ANN0
     window.timeline.select_rows([row_of(window, files["garbage"])])
     assert panel.damage_box.isVisibleTo(window)
     assert not panel.use_damaged.isVisibleTo(window)  # nichts Lesbares: keine Option
+    window.timeline.select_rows([minor_row])
+    assert panel.damage_box.isVisibleTo(window)
+    assert panel.damage_box.title() == "Datei leicht beschädigt"
+    assert "vollständig lesbar. Wird verwendet" in panel.damage_label.text()
+    assert not panel.use_damaged.isVisibleTo(window)  # wird ohnehin verwendet
     window.timeline.select_rows([row_of(window, files["good"])])
     assert not panel.damage_box.isVisibleTo(window)
 
@@ -858,8 +872,12 @@ def test_damaged_tile_shows_warning_badge(qtbot) -> None:  # noqa: ANN001
 
     from slideshow.app.timeline import TileDelegate, TimelineModel, TimelineView
 
-    p = Project(items=[Item("photo", path="kaputt.jpg", damage="Bilddaten sind fehlerhaft"),
-                       Item("photo", path="gut.jpg")])
+    # lesbar 0 %: echte Beschädigung (der Standardwert 1.0 hieße „leicht beschädigt“)
+    p = Project(items=[Item("photo", path="kaputt.jpg", damage="Bilddaten sind fehlerhaft",
+                            damage_readable=0.0),
+                       Item("photo", path="gut.jpg"),
+                       Item("photo", path="leicht.jpg", damage="Bilddaten sind fehlerhaft",
+                            damage_readable=1.0)])
     model = TimelineModel(p, None)
     view = TimelineView()
     qtbot.addWidget(view)
@@ -882,11 +900,17 @@ def test_damaged_tile_shows_warning_badge(qtbot) -> None:  # noqa: ANN001
         painter.end()
         return img
 
-    damaged, good = paint(0), paint(1)
+    damaged, good, minor = paint(0), paint(1), paint(2)
+
+    def diff(a: QImage, b: QImage, x0: int, x1: int) -> int:
+        return sum(1 for x in range(x0, x1) for y in range(8, 26) if a.pixel(x, y) != b.pixel(x, y))
+
     # Abzeichen oben links: dort unterscheiden sich die beiden Kacheln
-    diff = sum(1 for x in range(8, 100) for y in range(8, 26)
-               if damaged.pixel(x, y) != good.pixel(x, y))
-    assert diff > 100
+    assert diff(damaged, good, 8, 100) > 100
+    # Leicht beschädigt: nur ein kleines Symbol, kein Text daneben
+    assert diff(minor, good, 8, 26) > 20
+    assert diff(minor, good, 30, 100) == 0
+    assert diff(minor, damaged, 8, 100) > 100
 
 
 def test_export_skips_damaged_and_summarizes(qtbot, window: MainWindow,  # noqa: ANN001
@@ -927,6 +951,21 @@ def test_export_marks_damage_found_late(qtbot, window: MainWindow,  # noqa: ANN0
     assert item.damage is not None and item.damage_usable
     assert window.model.tile(1).damaged
     assert "„Trotzdem verwenden“ möglich" in window.notice.label.text()
+
+
+def test_export_summary_names_dropped_chapter_titles(qtbot, window: MainWindow,  # noqa: ANN001
+                                                     umlaut_dir: Path) -> None:
+    from test_damaged import chapter_project
+
+    files = damaged_files(umlaut_dir)
+    window.set_project(chapter_project(files["good"], files["garbage"]), None)
+    assert window.export_to(umlaut_dir / "Kapitel.mp4", confirm=False) is not None
+    wait_render(qtbot, window)
+    text = window.notice.label.text()
+    assert "Übersprungen, weil beschädigt (1)" in text
+    assert "entfällt auch der Zwischentitel: „April 2026“" in text
+    # In der Zeitleiste bleibt der Zwischentitel, das Projekt ändert sich nur um die Markierung
+    assert sum(1 for it in window.project.items if it.kind == "title") == 4
 
 
 def test_main_window_never_narrower_than_toolbar(qtbot, window: MainWindow) -> None:  # noqa: ANN001

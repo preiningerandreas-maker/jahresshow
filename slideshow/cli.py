@@ -80,6 +80,8 @@ def cmd_render(ns: argparse.Namespace) -> int:
         print(f"WARNUNG: {w}")
     for sk in result.skipped:
         print(f"ÜBERSPRUNGEN (beschädigt): {sk.message()}")
+    for title in result.dropped_titles:
+        print(f"ENTFÄLLT (Kapitel leer): Zwischentitel „{title}“")
     for n in result.notes:
         print(f"HINWEIS: {n}")
     print(f"Kodierer: {result.encoder} ({LABELS.get(result.encoder, '')})")

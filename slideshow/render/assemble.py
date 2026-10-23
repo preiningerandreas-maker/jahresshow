@@ -18,6 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from slideshow.core.chapters import chapter_title, is_chapter_title
 from slideshow.core.ffmpeg import Cancelled, FFmpegError, run_ffmpeg
 from slideshow.core.importer import (
     DamagedFile,
@@ -33,6 +34,7 @@ from slideshow.core.normalize import (
     normalize_video,
 )
 from slideshow.core.project import (
+    DAMAGE_MINOR_MIN,
     DAMAGE_USABLE_MIN,
     FPS,
     PREVIEW_SIZE,
@@ -199,6 +201,9 @@ class RenderResult:
     notes: list[str] = field(default_factory=list)  # Hinweise, keine Fehler
     videos_normalized: int = 0  # im Render-Lauf umgewandelte Videos
     skipped: list[SkippedFile] = field(default_factory=list)  # beschädigt, ausgelassen
+    # erst beim Export als leicht beschädigt erkannt und trotzdem verwendet
+    minor: list[SkippedFile] = field(default_factory=list)
+    dropped_titles: list[str] = field(default_factory=list)  # Zwischentitel leerer Kapitel
 
     @property
     def duration(self) -> float:
@@ -239,19 +244,36 @@ def check_free_space(project: Project, cache_dir: Path) -> None:
         )
 
 
-def without(project: Project, bad: list[Item]) -> Project:
+def title_text(item: Item) -> str:
+    raw = item.text.text.strip() if item.text else ""
+    if raw:
+        return " ".join(raw.split())
+    return chapter_title(item.chapter) if item.chapter else "Zwischentitel"
+
+
+def without(project: Project, bad: list[Item], dropped_titles: list[str]) -> Project:
+    """Elemente weglassen. Bleibt dadurch von einem Kapitel nichts übrig, entfällt auch
+    sein Zwischentitel; dessen Text kommt in dropped_titles."""
     ids = {id(it) for it in bad}
-    return replace(project, items=[it for it in project.items if id(it) not in ids])
+    left = [it for it in project.items if id(it) not in ids]
+    lost = {it.chapter for it in bad if it.chapter is not None and not is_chapter_title(it)}
+    empty = lost - {it.chapter for it in left if not is_chapter_title(it)}
+    if empty:
+        titles = [it for it in left if is_chapter_title(it) and it.chapter in empty]
+        dropped_titles += [title_text(it) for it in titles]
+        left = [it for it in left if all(it is not t for t in titles)]
+    return replace(project, items=left)
 
 
-def skip_damaged(project: Project, skipped: list[SkippedFile]) -> Project:
+def skip_damaged(project: Project, skipped: list[SkippedFile],
+                 dropped_titles: list[str]) -> Project:
     """Als beschädigt bekannte Elemente weglassen (außer „trotzdem verwenden“)."""
     bad = [it for it in project.items if it.path and it.skip_damaged]
     for it in bad:
         assert it.path is not None and it.damage is not None
         add_skipped(skipped, SkippedFile(project.resolve(it.path), it.damage,
                                          it.damage_readable))
-    return without(project, bad)
+    return without(project, bad, dropped_titles)
 
 
 def add_skipped(skipped: list[SkippedFile], new: SkippedFile) -> None:
@@ -288,7 +310,8 @@ def render_project(
         if not project.resolve(t).is_file():
             raise RenderError(f"Musikdatei nicht gefunden: {describe_file(project.resolve(t))}")
     skipped: list[SkippedFile] = []
-    project = skip_damaged(project, skipped)
+    dropped_titles: list[str] = []
+    project = skip_damaged(project, skipped, dropped_titles)
 
     def check_left() -> None:
         if not project.items:
@@ -308,7 +331,8 @@ def render_project(
         encoder = detect_encoder(cache_dir, opts.encoder)
     cfg = RenderConfig(width, height, encoder, cache_dir, allow_original=opts.preview)
 
-    result = RenderResult(opts.output, encoder, 0, skipped=skipped)
+    result = RenderResult(opts.output, encoder, 0, skipped=skipped,
+                          dropped_titles=dropped_titles)
 
     def emit(msg: str, frac: float) -> None:
         if status:
@@ -363,13 +387,15 @@ def render_project(
             add_skipped(skipped, SkippedFile(
                 src, "Video lässt sich nicht umwandeln (beschädigt oder unbekanntes Format)"))
             project = without(project, [it for it in project.items
-                                        if it.path and project.resolve(it.path) == src])
+                                        if it.path and project.resolve(it.path) == src],
+                              dropped_titles)
             check_left()
             continue
         result.videos_normalized += 1
 
     # Segmente. Ist ein Bild beschädigt, fällt sein Element heraus und die Zeitleiste wird
-    # neu berechnet; schon fertige Segmente kommen dann aus dem Cache.
+    # neu berechnet; schon fertige Segmente kommen dann aus dem Cache. Ist es nur leicht
+    # beschädigt (vollständig lesbar), wird es mit seinem lesbaren Teil neu versucht.
     while True:
         timeline = project.timeline(clip_length)
         total = timeline[-1].start_frame + timeline[-1].frames
@@ -377,6 +403,7 @@ def render_project(
         segments_cached = 0
         done = 0
         bad: Item | None = None
+        marked: tuple[Item, Item] | None = None  # (Element, Element mit Schadensangabe)
         for e in timeline:
             check_cancel()
             label = f"Element {e.index + 1} von {len(timeline)} wird vorbereitet"
@@ -391,9 +418,16 @@ def render_project(
                 path, cached = render_segment(project, e, cfg, progress=seg_progress,
                                               cancel=cancel)
             except DamagedFile as err:
-                log.warning("Element übersprungen: %s", err)
-                add_skipped(skipped, damaged_at_render(err.path, err.reason))
-                bad = e.item
+                info = damaged_at_render(err.path, err.reason)
+                if e.item.damage is None and info.readable >= DAMAGE_MINOR_MIN:
+                    log.info("Leicht beschädigt, wird verwendet: %s", err)
+                    add_skipped(result.minor, info)
+                    marked = (e.item, replace(e.item, damage=info.reason,
+                                              damage_readable=info.readable))
+                else:
+                    log.warning("Element übersprungen: %s", err)
+                    add_skipped(skipped, info)
+                    bad = e.item
                 break
             except (FFmpegError, OSError, ValueError) as err:
                 where = f" {describe_file(project.resolve(e.item.path))}" if e.item.path else ""
@@ -401,9 +435,13 @@ def render_project(
             seg_paths[e.index] = path
             segments_cached += cached
             done += e.frames
+        if marked is not None:
+            old, new = marked
+            project = replace(project, items=[new if it is old else it for it in project.items])
+            continue
         if bad is None:
             break
-        project = without(project, [bad])
+        project = without(project, [bad], dropped_titles)
         check_left()
 
     blocks = plan_blocks(timeline, opts.max_block)

@@ -770,8 +770,9 @@ class MainWindow(QMainWindow):
         if already:
             messages.append(f"{len(already)} Datei(en) waren schon im Projekt und wurden nicht "
                             "noch einmal hinzugefügt.")
-        damaged = [m for m in media if m.damage is not None]
-        messages += [damage_message(m) for m in damaged]
+        damaged = [m for m in media if m.damage is not None and not m.damage_minor]
+        minor = [m for m in media if m.damage_minor]
+        messages += [damage_message(m) for m in damaged + minor]
         for p, reason in res.skipped:
             messages.append(f"{describe_file(p)} wurde übersprungen: {reason}")
         if res.live_videos:
@@ -801,6 +802,9 @@ class MainWindow(QMainWindow):
         if damaged:
             text += (f"\n{len(damaged)} beschädigte Datei(en) sind in der Zeitleiste mit "
                      "„beschädigt“ markiert.")
+        if minor:
+            text += (f"\n{len(minor)} leicht beschädigte Datei(en) sind vollständig lesbar "
+                     "und werden verwendet.")
         kind = "warning" if res.skipped or outcome.duplicates or damaged else "success"
         self.notice.show_message(text, kind)
         if new_items:
@@ -1011,12 +1015,17 @@ class MainWindow(QMainWindow):
         lines = [f"• {s.message()}" for s in result.skipped[:10]]
         if len(result.skipped) > 10:
             lines.append(f"… und {len(result.skipped) - 10} weitere")
-        return (f"\n\nÜbersprungen, weil beschädigt ({len(result.skipped)}):\n"
+        text = (f"\n\nÜbersprungen, weil beschädigt ({len(result.skipped)}):\n"
                 + "\n".join(lines))
+        if result.dropped_titles:
+            titles = ", ".join(f"„{t}“" for t in result.dropped_titles)
+            text += ("\n\nAlle Elemente eines Kapitels sind weggefallen, deshalb entfällt "
+                     f"auch der Zwischentitel: {titles}")
+        return text
 
     def _mark_skipped(self, result: RenderResult) -> None:
         """Erst beim Export gefundene Schäden auch in der Zeitleiste markieren."""
-        found = {s.path.resolve(): s for s in result.skipped}
+        found = {s.path.resolve(): s for s in result.skipped + result.minor}
         changed = False
         for it in self.project.items:
             if it.path and it.damage is None:

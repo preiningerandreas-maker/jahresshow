@@ -1,6 +1,8 @@
 """Beschädigte Bilder: beim Import erkennen (vollständig dekodieren), beim Export überspringen
 statt abbrechen, „trotzdem verwenden“ für abgeschnittene JPGs mit genug lesbarem Teil.
-Jede Meldung nennt Dateiname und Pfad."""
+Bilder, die zu mindestens 99 % lesbar sind, werden automatisch verwendet. Fallen alle
+Elemente eines Kapitels weg, entfällt auch sein Zwischentitel. Jede Meldung nennt
+Dateiname und Pfad."""
 
 from __future__ import annotations
 
@@ -12,15 +14,16 @@ import pytest
 from conftest import requires_ffmpeg
 from PIL import Image, ImageFile
 
-from slideshow.core.chapters import media_items
+from slideshow.core.chapters import apply_chapters, media_items
 from slideshow.core.importer import (
     DamagedFile,
     check_photo,
+    damage_message,
     describe_file,
     import_media,
     open_photo,
 )
-from slideshow.core.project import DAMAGE_USABLE_MIN, Item, Project
+from slideshow.core.project import DAMAGE_MINOR_MIN, DAMAGE_USABLE_MIN, Item, Project
 from slideshow.render.assemble import RenderError, RenderOptions, render_project
 
 REAL_DAMAGED = ("20180606_122427.jpg", "20180607_151823.jpg")
@@ -40,6 +43,16 @@ def truncated(src: Path, target: Path, fraction: float) -> Path:
 
 def garbage(target: Path, size: int = 40_000) -> Path:
     target.write_bytes(random.Random(7).randbytes(size))
+    return target
+
+
+def slightly_cut(target: Path, missing: int = 1000) -> Path:
+    """Hohes Foto (400×2000), am Ende fehlen `missing` Bytes. 1000 Bytes: nur die letzte
+    Blockzeile fehlt, lesbar über 99 %. 12 000 Bytes: lesbar knapp unter 99 %."""
+    src = make_photo(target.with_name(f"{target.stem} Quelle.jpg"), (400, 2000))
+    data = src.read_bytes()
+    src.unlink()
+    target.write_bytes(data[: len(data) - missing])
     return target
 
 
@@ -151,6 +164,33 @@ def test_damage_is_saved_in_project(damaged_set: dict[str, Path], tmp_path: Path
     assert loaded.use_damaged
 
 
+def test_minor_damage_is_used_automatically(umlaut_dir: Path) -> None:
+    """Ab 99 % lesbar: automatisch verwenden, ohne „trotzdem verwenden“. Darunter bleibt es
+    beim manuellen „trotzdem verwenden“."""
+    assert DAMAGE_MINOR_MIN == 0.99
+    minor = slightly_cut(umlaut_dir / "leicht beschädigt Ä.jpg", 1000)
+    almost = slightly_cut(umlaut_dir / "knapp unter 99.jpg", 12000)
+    check = check_photo(minor)
+    assert not check.ok and check.readable >= 0.99 and check.minor
+    check = check_photo(almost)
+    assert 0.8 <= check.readable < 0.99 and check.usable and not check.minor
+
+    res = import_media([minor, almost])
+    by_name = {m.path.name: m for m in res.media}
+    assert by_name[minor.name].damage_minor and not by_name[almost.name].damage_minor
+    text = damage_message(by_name[minor.name])
+    assert f"„{minor.name}“ ({minor})" in text
+    assert "leicht beschädigt" in text and "vollständig lesbar und wird verwendet" in text
+    assert "Trotzdem verwenden" in damage_message(by_name[almost.name])
+
+    items = {Path(it.path or "").name: it for it in media_items(res.media)}
+    m, a = items[minor.name], items[almost.name]
+    assert m.damage_minor and not m.skip_damaged and m.tolerant_load and not m.use_damaged
+    assert not a.damage_minor and a.skip_damaged and not a.tolerant_load and a.damage_usable
+    a.use_damaged = True
+    assert not a.skip_damaged and a.tolerant_load
+
+
 # --- Export -------------------------------------------------------------------------
 
 
@@ -226,6 +266,68 @@ def test_export_with_only_damaged_files_names_them(damaged_set: dict[str, Path],
         assert f"„{path.name}“ ({path})" in str(exc.value)
 
 
+@requires_ffmpeg
+def test_export_uses_minor_damage_automatically(damaged_set: dict[str, Path], umlaut_dir: Path,
+                                                tmp_path: Path) -> None:
+    minor = slightly_cut(umlaut_dir / "leicht beschädigt.jpg", 1000)
+    almost = slightly_cut(umlaut_dir / "knapp unter 99.jpg", 12000)
+    p = photo_project([damaged_set["good"], minor, almost])
+    res, out = render(p, tmp_path)
+    assert out.is_file()
+    assert res.frames == 60  # gut + leicht beschädigt; knapp unter 99 % wartet auf Zustimmung
+    assert [s.path.name for s in res.skipped] == [almost.name]
+    assert not res.minor  # schon beim Import erkannt
+
+
+@requires_ffmpeg
+def test_export_uses_unmarked_minor_damage(damaged_set: dict[str, Path], umlaut_dir: Path,
+                                           tmp_path: Path) -> None:
+    """Älteres Projekt: Erst der Export merkt, dass ein Bild leicht beschädigt ist. Es wird
+    mit dem lesbaren Teil verwendet statt übersprungen und als leicht beschädigt gemeldet."""
+    minor = slightly_cut(umlaut_dir / "leicht beschädigt.jpg", 1000)
+    p = Project(items=[Item("photo", path=str(path), duration=1.0)
+                       for path in (damaged_set["good"], minor)])
+    p.settings.transition = "none"
+    res, out = render(p, tmp_path)
+    assert out.is_file() and res.frames == 60
+    assert not res.skipped
+    assert [s.path for s in res.minor] == [minor]
+    assert res.minor[0].readable >= DAMAGE_MINOR_MIN
+    assert p.items[1].damage is None  # Projekt des Aufrufers bleibt unverändert
+
+
+def chapter_project(good: Path, bad: Path) -> Project:
+    """März: gut · April: nur kaputt · Mai: gut · Juni: kaputt und gut. Alles 1 s."""
+    dated = [("2026-03-01", good), ("2026-04-01", bad), ("2026-05-01", good),
+             ("2026-06-01", bad), ("2026-06-02", good)]
+    items = apply_chapters([Item("photo", path=str(path), taken=f"{day}T10:00:00")
+                            for day, path in dated])
+    for it in items:
+        it.duration = 1.0
+    p = Project(items=items)
+    p.settings.transition = "none"
+    return p
+
+
+@requires_ffmpeg
+@pytest.mark.parametrize("marked", [True, False], ids=["beim Import", "erst beim Export"])
+def test_empty_chapter_loses_its_title(damaged_set: dict[str, Path], tmp_path: Path,
+                                       marked: bool) -> None:
+    p = chapter_project(damaged_set["good"], damaged_set["garbage"])
+    assert sum(1 for it in p.items if it.kind == "title") == 4
+    if marked:
+        for it in p.items:
+            if it.path == str(damaged_set["garbage"]):
+                it.damage, it.damage_readable = "kein lesbares Bild", 0.0
+    res, out = render(p, tmp_path)
+    assert out.is_file()
+    # Zwischentitel März, Mai, Juni und drei gute Fotos; April fällt ganz weg
+    assert res.frames == 6 * 30
+    assert res.dropped_titles == ["April 2026"]
+    assert [s.path for s in res.skipped] == [damaged_set["garbage"]]
+    assert len(p.items) == 9  # Projekt des Aufrufers bleibt unverändert
+
+
 # --- Echte Dateien ------------------------------------------------------------------
 
 
@@ -243,7 +345,7 @@ def test_real_damaged_files_are_detected(real_damaged: list[Path]) -> None:
     for path in real_damaged:
         check = check_photo(path)
         assert check.reason == "Bilddaten sind fehlerhaft"
-        assert check.readable == 1.0 and check.usable
+        assert check.readable == 1.0 and check.usable and check.minor
         with pytest.raises(DamagedFile) as exc:
             open_photo(path)
         assert f"„{path.name}“ ({path})" in str(exc.value)
@@ -251,15 +353,13 @@ def test_real_damaged_files_are_detected(real_damaged: list[Path]) -> None:
 
 
 @requires_ffmpeg
-def test_real_damaged_files_skipped_then_used(real_damaged: list[Path], tmp_path: Path,
-                                              synthetic: Path) -> None:
+def test_real_damaged_files_used_automatically(real_damaged: list[Path], tmp_path: Path,
+                                               synthetic: Path) -> None:
+    """Beide Panoramen sind vollständig lesbar und werden ohne Nachfrage verwendet."""
     good = shutil.copy(synthetic / "Querformat Wörthersee.jpg", tmp_path / "gut.jpg")
     p = photo_project([Path(good), *real_damaged])
-    assert sum(1 for it in p.items if it.damage) == 2
-    res, _ = render(p, tmp_path)
-    assert res.frames == 30
-    assert sorted(s.path.name for s in res.skipped) == sorted(REAL_DAMAGED)
-    for it in p.items:
-        it.use_damaged = True
+    damaged = [it for it in p.items if it.damage]
+    assert len(damaged) == 2
+    assert all(it.damage_minor and not it.skip_damaged for it in damaged)
     res, out = render(p, tmp_path)
     assert res.frames == 90 and not res.skipped and out.is_file()

@@ -303,9 +303,15 @@ class ItemPanel(QWidget):
         self.damage_box.setVisible(bool(damaged))
         if not damaged:
             return
+        only_minor = all(it.damage_minor for it in damaged)
+        self.damage_box.setTitle("Datei leicht beschädigt" if only_minor else "Datei beschädigt")
         lines = []
         for it in damaged[:5]:
             assert self.project is not None and it.path is not None
+            if it.damage_minor:
+                lines.append(f"{describe_file(self.project.resolve(it.path))}: Datei leicht "
+                             "beschädigt, vollständig lesbar. Wird verwendet.")
+                continue
             line = (f"{describe_file(self.project.resolve(it.path))}: {it.damage}, lesbar "
                     f"{round(it.damage_readable * 100)} %.")
             if it.skip_damaged:
@@ -315,8 +321,8 @@ class ItemPanel(QWidget):
             lines.append(line)
         if len(damaged) > 5:
             lines.append(f"… und {len(damaged) - 5} weitere")
-        usable = [it for it in damaged if it.damage_usable]
-        if not usable:
+        usable = [it for it in damaged if it.damage_usable and not it.damage_minor]
+        if not usable and not only_minor:
             lines.append("Der lesbare Teil reicht nicht, um die Datei zu verwenden.")
         self.damage_label.setText("\n".join(lines))
         self.use_damaged.setVisible(bool(usable))

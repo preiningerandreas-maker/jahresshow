@@ -23,6 +23,8 @@ RESOLUTIONS = {"1080p": (1920, 1080), "2160p": (3840, 2160)}
 PREVIEW_SIZE = (854, 480)
 # Beschädigte Bilder: „trotzdem verwenden“ nur, wenn mindestens dieser Anteil lesbar ist
 DAMAGE_USABLE_MIN = 0.8
+# Ab diesem Anteil gilt ein Bild als nur leicht beschädigt und wird automatisch verwendet
+DAMAGE_MINOR_MIN = 0.99
 
 
 def to_frames(seconds: float) -> int:
@@ -74,9 +76,21 @@ class Item:
         return self.damage is not None and self.damage_readable >= DAMAGE_USABLE_MIN
 
     @property
+    def damage_minor(self) -> bool:
+        """Leicht beschädigt, aber vollständig lesbar: wird ohne Nachfrage verwendet."""
+        return self.damage is not None and self.damage_readable >= DAMAGE_MINOR_MIN
+
+    @property
     def skip_damaged(self) -> bool:
-        """Beim Export überspringen: beschädigt und nicht „trotzdem verwenden“."""
-        return self.damage is not None and not (self.use_damaged and self.damage_usable)
+        """Beim Export überspringen: beschädigt, nicht leicht beschädigt und nicht
+        „trotzdem verwenden“."""
+        return (self.damage is not None and not self.damage_minor
+                and not (self.use_damaged and self.damage_usable))
+
+    @property
+    def tolerant_load(self) -> bool:
+        """Beschädigtes Bild mit seinem lesbaren Teil laden."""
+        return self.damage is not None and not self.skip_damaged
 
     def validate(self) -> None:
         if self.kind not in KINDS:

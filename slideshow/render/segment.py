@@ -186,7 +186,7 @@ def build_picture(project: Project, item: Item, w: int, h: int, cache_dir: Path,
         else:
             assert item.path is not None
             prepare_photo(project.resolve(item.path), w, h, pre, fast=fast,
-                          tolerant=item.use_damaged and item.damage_usable)
+                          tolerant=item.tolerant_load)
             fit = item.fit
         work.append(pre)
         args += ["-framerate", str(FPS), "-i", str(pre)]

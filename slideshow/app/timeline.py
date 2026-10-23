@@ -76,6 +76,7 @@ SCROLL_PAUSE = 0.15  # Sekunden ohne Nachladen nach jeder Scrollbewegung
 
 KIND_LABELS = {"photo": "Foto", "video": "Video", "title": "Titel"}
 DAMAGED_TEXT = "beschädigt"
+MINOR_DAMAGE_TIP = "Datei leicht beschädigt, vollständig lesbar"
 # Bildinhalt wie im Export (keine Theme-Farben): schwarze Ränder, Abdunkeln bei blur,
 # weißer Titeltext auf der Titelfarbe des Nutzers
 BLACK = QColor("#000000")
@@ -108,6 +109,7 @@ class Tile:
     chapter: bool
     duplicate: bool
     damaged: bool  # Bilddaten beschädigt
+    slightly_damaged: bool  # leicht beschädigt, vollständig lesbar (wird verwendet)
     background: str
     thumb_key: str | None  # Pfad des Vorschaubilds, None bei Titeln ohne Foto
     fit: str  # Formatmodus blur | black | crop
@@ -268,7 +270,8 @@ class TimelineModel(QAbstractListModel):
             src = self.thumb_source(item)
             key = str(src) if src is not None and media_kind(src) is not None else None
             t = Tile(item_label(item), self.subtitle(item), item.kind, is_chapter_title(item),
-                     src is not None and src in self.duplicates, item.damage is not None,
+                     src is not None and src in self.duplicates,
+                     item.damage is not None and not item.damage_minor, item.damage_minor,
                      item.background, key, item.fit)
             self._tiles[row] = t
         return t
@@ -337,7 +340,9 @@ class TimelineModel(QAbstractListModel):
         src = self.thumb_source(item)
         if src is not None and src in self.duplicates:
             lines.append("Doppelt vorhanden (gleicher Inhalt wie eine andere Datei)")
-        if item.damage is not None:
+        if item.damage_minor:
+            lines.append(MINOR_DAMAGE_TIP)
+        elif item.damage is not None:
             lines.append(f"Beschädigt: {item.damage}, lesbar "
                          f"{round(item.damage_readable * 100)} %")
             lines.append("Wird trotzdem verwendet (lesbarer Teil)" if not item.skip_damaged
@@ -552,6 +557,14 @@ class TileDelegate(QStyledItemDelegate):
             painter.drawPixmap(badge.x() + 4, badge.y() + 2, icon("warning").pixmap(14, 14))
             painter.drawText(badge.adjusted(20, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter,
                              DAMAGED_TEXT)
+        elif tile.slightly_damaged:
+            # Dezentes Hinweissymbol ohne Text, gedämpft; Erklärung im Tooltip
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(color("bg", 160))
+            badge = QRect(thumb.x() + 4, thumb.y() + 4, 18, 18)
+            painter.drawRoundedRect(badge, 3, 3)
+            painter.drawPixmap(badge.x() + 2, badge.y() + 2,
+                               icon("info", "muted").pixmap(14, 14))
         if tile.duplicate:
             painter.setPen(color("text"))
             painter.setBrush(color("bg"))
