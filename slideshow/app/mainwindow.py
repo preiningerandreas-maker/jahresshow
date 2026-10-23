@@ -13,7 +13,13 @@ from datetime import date
 from pathlib import Path
 
 from PySide6.QtCore import QSize, QStandardPaths, Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QKeySequence
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QCloseEvent,
+    QDesktopServices,
+    QKeySequence,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -72,7 +78,15 @@ from slideshow.render.assemble import (
 )
 from slideshow.render.assemble import render_project as _render_project
 from slideshow.render.cache import cleanup_tmp, default_cache_dir, sweep_stale_parts
-from slideshow.render.encoder import detect_encoder
+from slideshow.render.encoder import (
+    GPU_MODES,
+    GPU_NEVER,
+    choose_encoder,
+    failed_text,
+    forget_failures,
+    load_prefs,
+    set_gpu_mode,
+)
 
 log = logging.getLogger(__name__)
 
@@ -215,7 +229,6 @@ class MainWindow(QMainWindow):
         self._duration_gen = 0
         self.last_result: RenderResult | None = None
         self._encoder_lock = threading.Lock()
-        self._encoder: str | None = None
 
         threading.Thread(target=sweep_stale_parts, args=(self.cache_dir,), daemon=True,
                          name="sweep").start()
@@ -404,6 +417,32 @@ class MainWindow(QMainWindow):
         m = menu.addMenu("&Show")
         m.addAction(self.act_preview)
         m.addAction(self.act_export)
+        m = menu.addMenu("E&xtras")
+        self.gpu_menu = m.addMenu("Grafikkarte verwenden")
+        self.gpu_menu.setToolTipsVisible(True)
+        group = QActionGroup(self)
+        self.gpu_actions: dict[str, QAction] = {}
+        tips = {
+            "auto": "Die Grafikkarte rechnet das Video, wenn sie es kann. Das ist schneller.",
+            GPU_NEVER: "Immer der Prozessor. Langsamer, funktioniert aber auf jedem Gerät.",
+        }
+        for mode, text in GPU_MODES.items():
+            act = QAction(text, self)
+            act.setCheckable(True)
+            act.setToolTip(tips[mode])
+            act.setStatusTip(tips[mode])
+            act.triggered.connect(lambda _checked=False, mode=mode: self.set_gpu_mode(mode))
+            group.addAction(act)
+            self.gpu_menu.addAction(act)
+            self.gpu_actions[mode] = act
+        self.gpu_menu.addSeparator()
+        self.act_gpu_retry = self._action(
+            "Grafikkarte wieder erlauben", self.retry_gpu, None, None,
+            "Die Grafikkarte hat auf diesem Gerät schon einmal versagt und wird deshalb "
+            "nicht verwendet. Beim nächsten Export wieder versuchen.")
+        self.gpu_menu.addAction(self.act_gpu_retry)
+        self.gpu_menu.aboutToShow.connect(self.update_gpu_menu)
+        self.update_gpu_menu()
 
         tb = MainToolBar("Werkzeuge")
         tb.setObjectName("mainToolbar")
@@ -457,11 +496,38 @@ class MainWindow(QMainWindow):
     # --- Kodierer --------------------------------------------------------------------
 
     def encoder_for_jobs(self) -> str:
-        """Kodierer für Umwandlung und Export (Probe-Encode einmalig, Ergebnis im Cache)."""
+        """Kodierer für die Umwandlung: nach Einstellung und gemerkten Pannen (Probe-Encode
+        einmalig, Ergebnis im Cache)."""
         with self._encoder_lock:
-            if self._encoder is None:
-                self._encoder = detect_encoder(self.cache_dir, self.forced_encoder)
-            return self._encoder
+            return choose_encoder(self.cache_dir, self.forced_encoder).name
+
+    def update_gpu_menu(self) -> None:
+        prefs = load_prefs(self.cache_dir)
+        self.gpu_actions[prefs.mode].setChecked(True)
+        self.act_gpu_retry.setVisible(bool(prefs.failed))
+        if prefs.failed:
+            self.act_gpu_retry.setText(f"Grafikkarte wieder erlauben (versagt: "
+                                       f"{failed_text(prefs)})")
+
+    def set_gpu_mode(self, mode: str) -> None:
+        try:
+            set_gpu_mode(self.cache_dir, mode)
+        except OSError as e:
+            self.notice.show_message(f"Die Einstellung konnte nicht gespeichert werden: {e}",
+                                     "error")
+        self.update_gpu_menu()
+
+    def retry_gpu(self) -> None:
+        try:
+            forget_failures(self.cache_dir)
+        except OSError as e:
+            self.notice.show_message(f"Die Einstellung konnte nicht gespeichert werden: {e}",
+                                     "error")
+        else:
+            self.notice.show_message(
+                "Die Grafikkarte wird beim nächsten Export wieder verwendet. Versagt sie "
+                "erneut, rechnet automatisch der Prozessor weiter.", "info")
+        self.update_gpu_menu()
 
     # --- Projekt ---------------------------------------------------------------------
 
@@ -978,7 +1044,7 @@ class MainWindow(QMainWindow):
                      "darauf und dauert entsprechend länger.")
         if confirm and not self.confirm_export(text, too_big):
             return None
-        opts = RenderOptions(output=output, encoder=self.forced_encoder or self._encoder,
+        opts = RenderOptions(output=output, encoder=self.forced_encoder,
                              cache_dir=self.cache_dir)
         return self._start_render(opts, "Video wird erstellt")
 
@@ -1023,6 +1089,9 @@ class MainWindow(QMainWindow):
                      f"auch der Zwischentitel: {titles}")
         return text
 
+    def _encoder_summary(self, result: RenderResult) -> str:
+        return f"\n\nHinweis: {result.encoder_note}" if result.encoder_note else ""
+
     def _mark_skipped(self, result: RenderResult) -> None:
         """Erst beim Export gefundene Schäden auch in der Zeitleiste markieren."""
         found = {s.path.resolve(): s for s in result.skipped + result.minor}
@@ -1050,9 +1119,10 @@ class MainWindow(QMainWindow):
                     "und Bildrate können im fertigen Video anders aussehen.\n"
                     + "\n".join(f"• {note}" for note in result.notes[:5])
                     + self._skipped_summary(result), "warning")
-            elif result.skipped:
+            elif result.skipped or result.encoder_note:
                 self.notice.show_message(
-                    "Vorschau erstellt." + self._skipped_summary(result), "warning")
+                    "Vorschau erstellt." + self._encoder_summary(result)
+                    + self._skipped_summary(result), "warning")
             self.open_file(result.output)
             return
         size = result.output.stat().st_size if result.output.is_file() else 0
@@ -1060,10 +1130,12 @@ class MainWindow(QMainWindow):
                 f"Dauer {format_minutes(result.duration)}, Größe {format_size(size)}.")
         for w in result.warnings:
             text += f"\nAchtung: {w}"
+        text += self._encoder_summary(result)
         text += self._skipped_summary(result)
         folder = result.output.parent
+        problems = result.warnings or result.skipped or result.fallback_element is not None
         self.notice.show_message(
-            text, "warning" if result.warnings or result.skipped else "success",
+            text, "warning" if problems else "success",
             ("Ordner öffnen", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))))
         QApplication.alert(self)
 

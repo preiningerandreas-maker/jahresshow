@@ -24,7 +24,14 @@ from slideshow.render.assemble import (
     render_project,
 )
 from slideshow.render.cache import default_cache_dir
-from slideshow.render.encoder import ENCODERS, LABELS, detect_encoder
+from slideshow.render.encoder import (
+    ENCODERS,
+    GPU_MODES,
+    LABELS,
+    choose_encoder,
+    failed_text,
+    load_prefs,
+)
 
 
 def _fmt_time(seconds: float) -> str:
@@ -85,6 +92,8 @@ def cmd_render(ns: argparse.Namespace) -> int:
         print(f"ENTFÄLLT (Kapitel leer): Zwischentitel „{title}“")
     for n in result.notes:
         print(f"HINWEIS: {n}")
+    if result.encoder_note:
+        print(f"HINWEIS: {result.encoder_note}")
     print(f"Kodierer: {result.encoder} ({LABELS.get(result.encoder, '')})")
     print(f"Segmente: {result.segments_total} (aus Cache: {result.segments_cached}), "
           f"Abschnitte: {result.blocks_total} (aus Cache: {result.blocks_cached})")
@@ -95,10 +104,15 @@ def cmd_render(ns: argparse.Namespace) -> int:
 
 def cmd_encoders(ns: argparse.Namespace) -> int:
     cache = Path(ns.cache_dir) if ns.cache_dir else default_cache_dir()
-    chosen = detect_encoder(cache)
+    prefs = load_prefs(cache)
+    chosen = choose_encoder(cache).name
     for e in ENCODERS:
         mark = "*" if e == chosen else " "
-        print(f"{mark} {e:<12} {LABELS[e]}")
+        failed = " (hat beim Kodieren versagt)" if e in prefs.failed else ""
+        print(f"{mark} {e:<12} {LABELS[e]}{failed}")
+    print(f"Grafikkarte verwenden: {GPU_MODES[prefs.mode]}")
+    if prefs.failed:
+        print(f"Gemerkte Panne: {failed_text(prefs)}")
     return 0
 
 

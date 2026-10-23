@@ -68,7 +68,7 @@ Benutzer: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
 # schnelle Vorschau in 480p, nur Elemente 3 bis 8
 .venv\Scripts\python.exe -m slideshow render projekt.json --preview --from 3 --to 8
 # welche Kodierer (Grafikkarte/Prozessor) funktionieren hier?
-.venv\Scripts\python.exe -m slideshow encoders
+.venv\Scripts\python.exe -m slideshow encoders   # mit Einstellung und gemerkter Panne der Grafikkarte
 ```
 
 Zwischendateien (umgewandelte Videos, Segmente, Vorschaubilder) liegen in

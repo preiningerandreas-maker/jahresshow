@@ -12,9 +12,10 @@ from typing import Any
 
 from PySide6.QtCore import QObject, Signal
 
-from slideshow.core.ffmpeg import Cancelled
+from slideshow.core.ffmpeg import Cancelled, FFmpegError
 from slideshow.core.importer import describe_file
 from slideshow.core.normalize import BackgroundNormalizer, NormalizeProgress, cached_normalized
+from slideshow.render.encoder import remember_failure
 
 log = logging.getLogger(__name__)
 
@@ -141,7 +142,8 @@ class VideoPrep(QObject):
             encoder = "libx264"
         normalizer = BackgroundNormalizer(
             self.cache_dir, encoder=encoder, on_progress=self._on_progress,
-            on_done=self._on_done, on_error=self._on_error)
+            on_done=self._on_done, on_error=self._on_error,
+            on_encoder_failure=self._on_encoder_failure)
         with self._lock:
             if self._closed:
                 waiting: list[Path] = []
@@ -193,6 +195,17 @@ class VideoPrep(QObject):
             self._known.discard(src)  # später erneut versuchen (z. B. beim Export)
         self.error.emit(src, f"{describe_file(src)} konnte nicht umgewandelt werden: {e}")
         self._finish(src)
+
+    def _on_encoder_failure(self, encoder: str, src: Path, err: FFmpegError) -> None:
+        """Grafikkarte hat versagt, der Prozessor hat das Video umgewandelt und macht mit den
+        übrigen weiter. Für dieses Gerät merken, damit auch der Export gleich den Prozessor
+        nimmt."""
+        log.warning("%s hat beim Umwandeln von %s versagt, weiter mit dem Prozessor: %s",
+                    encoder, describe_file(src), err)
+        try:
+            remember_failure(self.cache_dir, encoder)
+        except OSError as e:
+            log.warning("Panne der Grafikkarte konnte nicht gespeichert werden: %s", e)
 
     def shutdown(self) -> None:
         """Laufende Umwandlung abbrechen; fertige Dateien bleiben im Cache."""
