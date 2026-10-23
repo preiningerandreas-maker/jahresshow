@@ -150,3 +150,11 @@ def yuv_at(path: Path, x: float, y: float, *, at: float = 0.5,
     n = len(chroma)
     return (sum(luma) / len(luma), sum(raw[u_off + i] for i in chroma) / n,
             sum(raw[v_off + i] for i in chroma) / n)
+
+
+def framemd5(path: Path) -> list[str]:
+    """Prüfsummen aller dekodierten Bilder und Tonblöcke (ohne Kopfzeilen), zum Vergleich
+    zweier Videos auf identischen Inhalt."""
+    out = _raw(["-i", str(path), "-map", "0:v", "-map", "0:a", "-f", "framemd5"])
+    return [line for line in out.decode("ascii", "replace").splitlines()
+            if line and not line.startswith("#")]

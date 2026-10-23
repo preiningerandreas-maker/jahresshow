@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import json
+import os
 import shutil
+import subprocess
+import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -80,3 +85,51 @@ def test_lazy_background_request(synthetic: Path, umlaut_dir: Path,
     assert results[0] == results[-1]
     thumbs.shutdown()
     assert sorted(done) == sorted(srcs)
+
+
+def _alive(pid: int) -> bool:
+    """Läuft der Prozess noch? (Windows: Exit-Code abfragen, ohne ihn zu beenden)"""
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return False
+    try:
+        code = ctypes.c_ulong()
+        kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        return code.value == 259  # STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-Prozessabfrage")
+def test_thumb_workers_exit_when_app_is_killed(tmp_path: Path) -> None:
+    """Absturz oder Task-Manager: Die Hilfsprozesse dürfen nicht liegen bleiben."""
+    code = (
+        "import json, sys, time\n"
+        "from pathlib import Path\n"
+        "from slideshow.core.thumbs import ThumbProcessPool\n"
+        "if __name__ == '__main__':\n"
+        "    pool = ThumbProcessPool(Path(sys.argv[1]))\n"
+        "    pool.start()\n"
+        "    print(json.dumps(list(pool._pool._processes)), flush=True)\n"
+        "    time.sleep(120)\n"
+    )
+    script = tmp_path / "app.py"
+    script.write_text(code, "utf-8")
+    root = Path(__file__).resolve().parents[1]
+    proc = subprocess.Popen([sys.executable, str(script), str(tmp_path / "cache")],
+                            cwd=root, stdout=subprocess.PIPE, text=True,
+                            env={**os.environ, "PYTHONPATH": str(root)})
+    try:
+        assert proc.stdout is not None
+        workers = json.loads(proc.stdout.readline())
+        assert len(workers) == 2 and all(_alive(pid) for pid in workers)
+    finally:
+        proc.kill()  # hart beenden wie im Task-Manager
+        proc.wait(10)
+    deadline = time.monotonic() + 15
+    while any(_alive(pid) for pid in workers) and time.monotonic() < deadline:
+        time.sleep(0.2)
+    assert not any(_alive(pid) for pid in workers)

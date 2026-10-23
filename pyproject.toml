@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "jahresshow"
 version = "0.1.0"
@@ -6,10 +10,20 @@ requires-python = ">=3.12"
 dependencies = [
     "pillow>=10",
     "pillow-heif>=0.16",
+    "PySide6>=6.6",
 ]
 
+[project.scripts]
+jahresshow = "slideshow.cli:main"
+
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.5"]
+dev = ["pytest>=8", "pytest-qt>=4.4", "ruff>=0.5"]
+
+[tool.setuptools.packages.find]
+include = ["slideshow*"]
+
+[tool.setuptools.package-data]
+slideshow = ["assets/fonts/*", "assets/icons/*"]
 
 [tool.ruff]
 line-length = 100
@@ -22,3 +36,4 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = ["slow: rendert echte Videos mit FFmpeg"]
+qt_api = "pyside6"

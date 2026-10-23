@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
@@ -20,6 +21,22 @@ TRANSITIONS = ("fade", "fadeblack", "wipeleft", "slideleft", "none")
 POSITIONS = ("top", "center", "bottom")
 RESOLUTIONS = {"1080p": (1920, 1080), "2160p": (3840, 2160)}
 PREVIEW_SIZE = (854, 480)
+# Beschädigte Bilder: „trotzdem verwenden“ nur, wenn mindestens dieser Anteil lesbar ist
+DAMAGE_USABLE_MIN = 0.8
+# Ab diesem Anteil gilt ein Bild als nur leicht beschädigt und wird automatisch verwendet
+DAMAGE_MINOR_MIN = 0.99
+
+
+def readable_at_least(readable: float | None, minimum: float) -> bool:
+    """Lesbarer Anteil mindestens minimum; unbekannt (None) zählt als nicht lesbar."""
+    return readable is not None and readable >= minimum
+
+
+def readable_text(readable: float | None) -> str:
+    """„lesbar 95 %“ oder „lesbarer Anteil unbekannt“."""
+    if readable is None:
+        return "lesbarer Anteil unbekannt"
+    return f"lesbar {round(readable * 100)} %"
 
 
 def to_frames(seconds: float) -> int:
@@ -62,6 +79,34 @@ class Item:
     volume: float = 1.0
     chapter: str | None = None  # Kapitel "JJJJ-MM"; Titel mit Kapitel = Zwischentitel
     taken: str | None = None  # Aufnahmedatum ISO 8601, für die Kapitel
+    damage: str | None = None  # Bilddaten beschädigt (Grund); None = in Ordnung
+    # lesbarer Anteil eines beschädigten Bildes; None = unbekannt, zählt als nicht lesbar,
+    # damit ein Schaden nie stillschweigend als „leicht beschädigt“ verwendet wird
+    damage_readable: float | None = None
+    use_damaged: bool = False  # beschädigtes Bild trotzdem verwenden (lesbarer Teil)
+
+    @property
+    def damage_usable(self) -> bool:
+        return self.damage is not None and readable_at_least(self.damage_readable,
+                                                             DAMAGE_USABLE_MIN)
+
+    @property
+    def damage_minor(self) -> bool:
+        """Leicht beschädigt, aber vollständig lesbar: wird ohne Nachfrage verwendet."""
+        return self.damage is not None and readable_at_least(self.damage_readable,
+                                                             DAMAGE_MINOR_MIN)
+
+    @property
+    def skip_damaged(self) -> bool:
+        """Beim Export überspringen: beschädigt, nicht leicht beschädigt und nicht
+        „trotzdem verwenden“."""
+        return (self.damage is not None and not self.damage_minor
+                and not (self.use_damaged and self.damage_usable))
+
+    @property
+    def tolerant_load(self) -> bool:
+        """Beschädigtes Bild mit seinem lesbaren Teil laden."""
+        return self.damage is not None and not self.skip_damaged
 
     def validate(self) -> None:
         if self.kind not in KINDS:
@@ -92,6 +137,7 @@ class Settings:
     transition: str = "fade"
     transition_duration: float = 1.0
     resolution: str = "1080p"
+    chapters: bool = True  # Zwischentitel pro Monat (nur für die Oberfläche)
 
     def validate(self) -> None:
         if self.transition not in TRANSITIONS:
@@ -227,9 +273,13 @@ class Project:
     def save(self, path: str | os.PathLike[str]) -> None:
         path = Path(path)
         self.base_dir = path.resolve().parent
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=2), "utf-8")
-        tmp.replace(path)
+        # Eindeutiger Zwischenname, dann umbenennen: nie eine halb geschriebene Projektdatei
+        tmp = path.with_name(f"{path.name}.{os.getpid()}-{uuid.uuid4().hex[:8]}.tmp")
+        try:
+            tmp.write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=2), "utf-8")
+            tmp.replace(path)
+        finally:
+            tmp.unlink(missing_ok=True)
 
     @classmethod
     def load(cls, path: str | os.PathLike[str]) -> Project:

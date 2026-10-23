@@ -20,6 +20,7 @@ from slideshow.core.importer import VideoInfo, video_info
 from slideshow.core.project import FPS
 from slideshow.render.cache import (
     cleanup_tmp,
+    commit_tmp,
     default_cache_dir,
     file_fingerprint,
     make_key,
@@ -175,9 +176,12 @@ def normalize_video(
     hwaccel: bool = True,
     progress: NormalizeCallback | None = None,
     cancel: threading.Event | None = None,
+    on_encoder_failure: Callable[[FFmpegError], None] | None = None,
 ) -> Path:
     """Wandelt ein Video ins Arbeitsformat um oder liefert die Datei aus dem Cache.
-    Läuft die Umwandlung schon in einem anderen Thread, wird auf deren Ergebnis gewartet."""
+    Läuft die Umwandlung schon in einem anderen Thread, wird auf deren Ergebnis gewartet.
+    on_encoder_failure: wird aufgerufen, wenn der Hardware-Kodierer versagt hat und der
+    Prozessor (libx264) es dann geschafft hat."""
     final = normalized_path(src, cache_dir)
     if final.is_file():
         return final
@@ -189,14 +193,15 @@ def normalize_video(
         if final.is_file():  # inzwischen von der laufenden Umwandlung fertig
             return final
         return _normalize(src, final, encoder=encoder, hwaccel=hwaccel, progress=progress,
-                          cancel=cancel)
+                          cancel=cancel, on_encoder_failure=on_encoder_failure)
     finally:
         lock.release()
 
 
 def _normalize(src: Path, final: Path, *, encoder: str, hwaccel: bool,
                progress: NormalizeCallback | None,
-               cancel: threading.Event | None) -> Path:
+               cancel: threading.Event | None,
+               on_encoder_failure: Callable[[FFmpegError], None] | None = None) -> Path:
     final.parent.mkdir(parents=True, exist_ok=True)
     info = video_info(src)
     start = time.monotonic()
@@ -213,17 +218,22 @@ def _normalize(src: Path, final: Path, *, encoder: str, hwaccel: bool,
     # Hardware kann das Format nicht? Dann über die CPU, zuletzt mit libx264
     attempts = [(hw, enc) for hw in ((True, False) if hwaccel else (False,))
                 for enc in dict.fromkeys((encoder, "libx264"))]
+    encoder_error: FFmpegError | None = None
     try:
         for i, (hw, enc) in enumerate(attempts):
             try:
                 run_ffmpeg(build_args(src, info, tmp, enc, hwaccel=hw),
                            progress=on_progress, cancel=cancel)
+                if enc == "libx264" and encoder_error is not None and on_encoder_failure:
+                    on_encoder_failure(encoder_error)
                 break
-            except FFmpegError:
+            except FFmpegError as err:
                 cleanup_tmp(tmp)
+                if enc != "libx264":
+                    encoder_error = err
                 if i == len(attempts) - 1:
                     raise
-        tmp.replace(final)
+        commit_tmp(tmp, final)
     finally:
         cleanup_tmp(tmp)
     if progress is not None:
@@ -246,9 +256,13 @@ class BackgroundNormalizer:
         on_progress: Callable[[Path, NormalizeProgress], None] | None = None,
         on_done: Callable[[Path, Path], None] | None = None,
         on_error: Callable[[Path, Exception], None] | None = None,
+        on_encoder_failure: Callable[[str, Path, FFmpegError], None] | None = None,
     ) -> None:
+        """on_encoder_failure(kodierer, video, fehler): Die Grafikkarte hat versagt, das
+        Video wurde mit dem Prozessor umgewandelt; die weiteren Videos ebenso."""
         self.cache_dir = cache_dir
         self.encoder = encoder
+        self.on_encoder_failure = on_encoder_failure
         self.on_progress = on_progress
         self.on_done = on_done
         self.on_error = on_error
@@ -281,9 +295,15 @@ class BackgroundNormalizer:
             if self.on_progress:
                 self.on_progress(src, p)
 
+        def encoder_failed(err: FFmpegError, failed: str = self.encoder) -> None:
+            self.encoder = "libx264"
+            if self.on_encoder_failure:
+                self.on_encoder_failure(failed, src, err)
+
         try:
             out = normalize_video(src, self.cache_dir, encoder=self.encoder,
-                                  progress=report, cancel=self._cancel)
+                                  progress=report, cancel=self._cancel,
+                                  on_encoder_failure=encoder_failed)
         except Cancelled:
             return
         except Exception as e:  # noqa: BLE001 - jeder Fehler wird gemeldet, Rest läuft weiter

@@ -1,0 +1,4 @@
+Symbole: Fluent UI System Icons (Microsoft), Stil "regular", 24 px
+Quelle: npm-Paket @fluentui/svg-icons 1.1.343, Dateien icons/<name>_24_regular.svg
+Lizenz: MIT, siehe LICENSE.txt (aus github.com/microsoft/fluentui-system-icons)
+Die Dateien sind unverändert; eingefärbt wird beim Laden (slideshow/app/icons.py).

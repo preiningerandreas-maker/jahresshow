@@ -4,7 +4,7 @@ bei Fotos). Übergänge entstehen erst beim Zusammensetzen der Blöcke."""
 from __future__ import annotations
 
 import threading
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from PIL import Image
@@ -13,7 +13,13 @@ from slideshow.core.ffmpeg import ProgressCallback, run_ffmpeg
 from slideshow.core.importer import open_photo, video_info
 from slideshow.core.normalize import cached_normalized, normalize_video, to_bt709_scale
 from slideshow.core.project import FPS, Item, Project, TimelineEntry
-from slideshow.render.cache import cleanup_tmp, file_fingerprint, make_key, tmp_path
+from slideshow.render.cache import (
+    cleanup_tmp,
+    commit_tmp,
+    file_fingerprint,
+    make_key,
+    tmp_path,
+)
 from slideshow.render.encoder import encoder_args
 from slideshow.render.text import font_file, save_text_png
 
@@ -83,39 +89,143 @@ def fit_filter(fit: str, w: int, h: int, src: str, out: str) -> str:
 def _item_settings(item: Item) -> dict:
     d = asdict(item)
     # Übergänge, Dauer (steckt in frames) und Kapitel gehören nicht in den Schlüssel
-    for k in ("transition", "transition_duration", "duration", "chapter", "taken", "path"):
+    for k in ("transition", "transition_duration", "duration", "chapter", "taken", "path",
+              "damage", "damage_readable"):
         d.pop(k, None)
     return d
 
 
-def segment_key(project: Project, entry: TimelineEntry, cfg: RenderConfig) -> str:
-    item = entry.item
-    data: dict = {
-        "type": "segment",
-        "item": _item_settings(item),
-        "frames": entry.frames,
-        "size": [cfg.width, cfg.height],
-        "encoder": encoder_args(cfg.encoder, cfg.height, intermediate=True),
-    }
+def _picture_key_data(project: Project, item: Item, cache_dir: Path) -> dict:
+    """Was das Bild eines Elements bestimmt: Einstellungen, Quelle, Schrift."""
+    data: dict = {"item": _item_settings(item)}
     if item.path:
         src = project.resolve(item.path)
         data["source"] = file_fingerprint(src)
         if item.kind == "video":
-            data["normalized"] = cached_normalized(src, cfg.cache_dir) is not None
+            data["normalized"] = cached_normalized(src, cache_dir) is not None
     if item.text is not None:
         font = font_file(item.text.font)
         data["font"] = [font.name, font.stat().st_size]
-    return make_key(data)
+    return data
 
 
-def prepare_photo(src: Path, w: int, h: int, out: Path) -> Path:
-    """Foto (auch HEIC) laden, EXIF-Drehung anwenden, auf nötige Größe verkleinern, als PNG."""
-    img = open_photo(src)
+def segment_key(project: Project, entry: TimelineEntry, cfg: RenderConfig) -> str:
+    return make_key({
+        "type": "segment",
+        "frames": entry.frames,
+        "size": [cfg.width, cfg.height],
+        "encoder": encoder_args(cfg.encoder, cfg.height, intermediate=True),
+        **_picture_key_data(project, entry.item, cfg.cache_dir),
+    })
+
+
+def still_key(project: Project, item: Item, w: int, h: int, cache_dir: Path) -> str:
+    return make_key({"type": "still", "size": [w, h],
+                     **_picture_key_data(project, item, cache_dir)})
+
+
+def prepare_photo(src: Path, w: int, h: int, out: Path, *, fast: bool = False,
+                  tolerant: bool = False) -> Path:
+    """Foto (auch HEIC) laden, EXIF-Drehung anwenden, auf nötige Größe verkleinern, als PNG.
+    fast: JPEG gleich verkleinert dekodieren (Vorschau; deutlich schneller bei 12 MP).
+    tolerant: beschädigtes Bild mit seinem lesbaren Teil verwenden."""
+    img = open_photo(src, draft=(w, h) if fast else None, tolerant=tolerant)
     factor = max(w / img.width, h / img.height)  # Größe, die den Rahmen füllend abdeckt
     if factor < 1:
         size = (max(2, round(img.width * factor)), max(2, round(img.height * factor)))
         img = img.resize(size, Image.Resampling.LANCZOS)
     img.save(out, "PNG", compress_level=1)
+    return out
+
+
+@dataclass
+class Picture:
+    """Bildteil eines Segments: Eingänge und Filtergraph bis zum fertigen Einzelbild
+    (Formatmodus, bt709, Text). Segment und Standbild-Vorschau verwenden denselben."""
+
+    args: list[str]
+    graph: list[str]
+    last: str  # Name des letzten Ausgangs im Graphen
+    work: list[Path] = field(default_factory=list)  # Arbeitsdateien, danach löschen
+    has_audio: bool = False
+
+
+def build_picture(project: Project, item: Item, w: int, h: int, cache_dir: Path,
+                  work_base: Path, *, fast: bool = False) -> Picture:
+    """work_base: Pfad ohne Endung für Arbeitsdateien (bekommen eindeutige Namen).
+    fast: Fotos beschleunigt verkleinert laden (nur für Vorschauen)."""
+    work: list[Path] = []
+    args: list[str] = []
+    graph: list[str] = []
+    work_base.parent.mkdir(parents=True, exist_ok=True)
+
+    text_png: Path | None = None
+    if item.text is not None and item.text.text.strip():
+        text_png = save_text_png(item.text, w, h,
+                                 tmp_path(work_base.with_name(f"{work_base.name}_text.png")))
+        work.append(text_png)
+
+    if item.kind == "video":
+        assert item.path is not None
+        # Umgewandelte Fassung (30 fps CFR, SDR); das Original nur in der Vorschau
+        orig = project.resolve(item.path)
+        src = cached_normalized(orig, cache_dir) or orig
+        info = video_info(src)
+        if item.start > 0:
+            args += ["-ss", f"{item.start:.3f}"]
+        args += ["-i", str(src)]
+        graph.append(f"[0:v]fps={FPS}:start_time=0[src]")
+        has_audio = info.has_audio and item.audio
+        fit = item.fit
+        assume_bt709 = info.color_tags_missing
+    else:
+        pre = tmp_path(work_base.with_name(f"{work_base.name}_src.png"))
+        if item.kind == "title" and not item.path:
+            Image.new("RGB", (w, h), item.background).save(pre, "PNG")
+            fit = "black"
+        else:
+            assert item.path is not None
+            prepare_photo(project.resolve(item.path), w, h, pre, fast=fast,
+                          tolerant=item.tolerant_load)
+            fit = item.fit
+        work.append(pre)
+        args += ["-framerate", str(FPS), "-i", str(pre)]
+        graph.append("[0:v]null[src]")
+        has_audio = False
+        assume_bt709 = False
+
+    graph.append(fit_filter(fit, w, h, "src", "fit"))
+    # Erst Bild und Text getrennt nach bt709 YUV, dann in YUV überblenden
+    graph.append(f"[fit]{to_bt709(assume_bt709)}[base]")
+    last = "base"
+    if text_png is not None:
+        args += ["-i", str(text_png)]
+        graph.append(f"[1:v]{TEXT_TO_YUV}[text]")
+        graph.append(f"[{last}][text]overlay=0:0:format=yuv420[txt]")
+        last = "txt"
+    return Picture(args, graph, last, work, has_audio)
+
+
+def render_still(project: Project, item: Item, w: int, h: int, out: Path, cache_dir: Path,
+                 *, cancel: threading.Event | None = None) -> Path:
+    """Ein Standbild des Elements über dieselben Filter wie im Export (Formatmodus, Text,
+    Farben), als PNG in kleiner Auflösung für die Vorschau im Eigenschaftenbereich."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    pic = build_picture(project, item, w, h, cache_dir, cache_dir / "work" / out.stem,
+                        fast=True)
+    # YUV (bt709, begrenzter Bereich) zurück nach RGB, wie ein Abspielgerät es zeigt
+    pic.graph.append(f"[{pic.last}]scale=in_color_matrix=bt709:in_range=tv:out_range=pc,"
+                     "format=rgb24[v]")
+    tmp = tmp_path(out)
+    try:
+        run_ffmpeg([*pic.args, "-filter_complex", ";".join(pic.graph), "-map", "[v]",
+                    "-frames:v", "1", "-update", "1", "-f", "image2", "-c:v", "png", str(tmp)],
+                   cancel=cancel)
+        commit_tmp(tmp, out)
+    finally:
+        cleanup_tmp(tmp)
+        for p in pic.work:
+            cleanup_tmp(p)
     return out
 
 
@@ -144,52 +254,10 @@ def render_segment(
     n = entry.frames
     seconds = f"{n / FPS:.6f}"
     samples = n * SAMPLES_PER_FRAME
-    w, h = cfg.width, cfg.height
-    work: list[Path] = []
-    args: list[str] = []
-    graph: list[str] = []
-
-    text_png: Path | None = None
-    if item.text is not None and item.text.text.strip():
-        text_png = save_text_png(item.text, w, h, cfg.work_dir / f"{key}_text.png")
-        work.append(text_png)
-
-    if item.kind == "video":
-        assert item.path is not None
-        # Umgewandelte Fassung (30 fps CFR, SDR); das Original nur in der Vorschau
-        orig = project.resolve(item.path)
-        src = cached_normalized(orig, cfg.cache_dir) or orig
-        info = video_info(src)
-        if item.start > 0:
-            args += ["-ss", f"{item.start:.3f}"]
-        args += ["-i", str(src)]
-        graph.append(f"[0:v]fps={FPS}:start_time=0[src]")
-        has_audio = info.has_audio and item.audio
-    else:
-        pre = cfg.work_dir / f"{key}_src.png"
-        if item.kind == "title" and not item.path:
-            Image.new("RGB", (w, h), item.background).save(pre, "PNG")
-            fit = "black"
-        else:
-            assert item.path is not None
-            prepare_photo(project.resolve(item.path), w, h, pre)
-            fit = item.fit
-        work.append(pre)
-        args += ["-framerate", str(FPS), "-i", str(pre)]
-        graph.append("[0:v]null[src]")
-        has_audio = False
-
-    fit_mode = item.fit if item.kind == "video" else fit
-    graph.append(fit_filter(fit_mode, w, h, "src", "fit"))
-    # Erst Bild und Text getrennt nach bt709 YUV, dann in YUV überblenden
-    assume_bt709 = item.kind == "video" and info.color_tags_missing
-    graph.append(f"[fit]{to_bt709(assume_bt709)}[base]")
-    last = "base"
-    if text_png is not None:
-        args += ["-i", str(text_png)]
-        graph.append(f"[1:v]{TEXT_TO_YUV}[text]")
-        graph.append(f"[{last}][text]overlay=0:0:format=yuv420[txt]")
-        last = "txt"
+    pic = build_picture(project, item, cfg.width, cfg.height, cfg.cache_dir,
+                        cfg.work_dir / key)
+    args, graph, last, work = pic.args, pic.graph, pic.last, pic.work
+    has_audio = pic.has_audio
 
     if item.kind == "video":
         # Zu kurze Clips mit dem letzten Bild auffüllen, dann exakt auf n Bilder schneiden
@@ -220,13 +288,13 @@ def render_segment(
         "-filter_complex", ";".join(graph),
         "-map", "[v]", "-map", "[a]",
         "-frames:v", str(n),
-        *encoder_args(cfg.encoder, h, intermediate=True),
+        *encoder_args(cfg.encoder, cfg.height, intermediate=True),
         "-c:a", "flac",
         str(tmp),
     ]
     try:
         run_ffmpeg(args, progress=progress, cancel=cancel)
-        tmp.replace(final)
+        commit_tmp(tmp, final)
     finally:
         cleanup_tmp(tmp)
         for p in work:

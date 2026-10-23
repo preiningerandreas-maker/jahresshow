@@ -42,7 +42,7 @@ Das Endvideo hat immer explizit gesetzte Farbmetadaten bt709 (color_primaries, c
 Animationen, Ken Burns, Collagen, Rahmen, Beat-Sync, DVD, Cloud, Mehrsprachigkeit.
 
 ## Stack
-- Python 3.12, PySide6, Pillow, pillow-heif, pytest, ruff
+- Python 3.12.10 (wie in `.venv`), PySide6, Pillow, pillow-heif, pytest, pytest-qt, ruff
 - FFmpeg/ffprobe als externe Binaries in `bin/` (gyan.dev full build, nicht im Git)
 - Verpackung: PyInstaller **onedir**, ffmpeg.exe und ffprobe.exe im Ausgabeordner
 
@@ -73,7 +73,8 @@ slideshow/
 - Segmente cachen, Schlüssel = Hash aus Quelldatei (Pfad, Größe, mtime) plus Elementeinstellungen. Geänderte Elemente neu, Rest aus Cache. Abbruch und Fortsetzen möglich.
 
 ### Encoder-Erkennung
-Beim Start Probe-Encode (1 s testsrc) in dieser Reihenfolge: `h264_nvenc`, `h264_qsv`, `h264_amf`, `libx264`. Erster funktionierender gewinnt, Ergebnis cachen. `--encoder` erzwingt einen bestimmten. libx264 muss immer funktionieren.
+Beim Start Probe-Encode (4 s wechselnde Inhalte, gleiche Parameter wie Segmente und Endvideo) in dieser Reihenfolge: `h264_nvenc`, `h264_qsv`, `h264_amf`, `libx264`. Erster funktionierender gewinnt, Ergebnis cachen. `--encoder` erzwingt einen bestimmten. libx264 muss immer funktionieren.
+Versagt ein Hardware-Kodierer beim echten Export, wird der Schritt mit libx264 wiederholt und der Rest des Laufs bleibt bei libx264; Abbruch nur, wenn auch libx264 scheitert. Die Panne wird pro Gerät gemerkt (`grafikkarte.json` im Cache), der nächste Export nimmt gleich libx264 und sagt das. Einstellung „Grafikkarte verwenden: automatisch / nie“ unter Extras.
 
 ### Video-Normalisierung beim Import
 Jedes Video einmalig in Arbeitsformat umwandeln: 1080p (Höhe max. 1080), 30 fps CFR (VFR-Handyvideos sonst asynchron), SDR yuv420p H.264, Audio AAC 48 kHz. HDR (bt2020/smpte2084/arib-std-b67) per zscale + tonemap=hable nach bt709. Hardware-Dekodierung wenn verfügbar, sonst CPU. Fortschritt in der GUI anzeigen.
@@ -106,3 +107,5 @@ Text mit Pillow als transparentes PNG rendern, per overlay einblenden. Kein draw
 - Type Hints, `ruff check` sauber, `pytest` grün vor jedem Commit
 - Arbeiten auf Branch pro Meilenstein, kleine Commits
 - Keine neuen Abhängigkeiten ohne Begründung im Commit
+- Tests nie abschwächen, damit sie bestehen. Schlägt ein Test fehl, wird der Code repariert. Nur wenn der Test nachweislich falsch ist, darf er geändert werden, mit Begründung im Commit.
+- Antworten an Andreas immer auf Deutsch und per Du.

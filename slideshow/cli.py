@@ -1,5 +1,7 @@
 """Kommandozeile:
 
+python -m slideshow                      Oberfläche starten
+python -m slideshow gui [dateien ...]    Oberfläche mit Projekt oder Fotos/Videos starten
 python -m slideshow render <projekt.json> [-o out.mp4] [--encoder X] [--preview]
 """
 
@@ -21,7 +23,14 @@ from slideshow.render.assemble import (
     render_project,
 )
 from slideshow.render.cache import default_cache_dir
-from slideshow.render.encoder import ENCODERS, LABELS, detect_encoder
+from slideshow.render.encoder import (
+    ENCODERS,
+    GPU_MODES,
+    LABELS,
+    choose_encoder,
+    failed_text,
+    load_prefs,
+)
 
 
 def _fmt_time(seconds: float) -> str:
@@ -76,8 +85,14 @@ def cmd_render(ns: argparse.Namespace) -> int:
 
     for w in result.warnings:
         print(f"WARNUNG: {w}")
+    for sk in result.skipped:
+        print(f"ÜBERSPRUNGEN (beschädigt): {sk.message()}")
+    for title in result.dropped_titles:
+        print(f"ENTFÄLLT (Kapitel leer): Zwischentitel „{title}“")
     for n in result.notes:
         print(f"HINWEIS: {n}")
+    if result.encoder_note:
+        print(f"HINWEIS: {result.encoder_note}")
     print(f"Kodierer: {result.encoder} ({LABELS.get(result.encoder, '')})")
     print(f"Segmente: {result.segments_total} (aus Cache: {result.segments_cached}), "
           f"Abschnitte: {result.blocks_total} (aus Cache: {result.blocks_cached})")
@@ -88,16 +103,31 @@ def cmd_render(ns: argparse.Namespace) -> int:
 
 def cmd_encoders(ns: argparse.Namespace) -> int:
     cache = Path(ns.cache_dir) if ns.cache_dir else default_cache_dir()
-    chosen = detect_encoder(cache)
+    prefs = load_prefs(cache)
+    chosen = choose_encoder(cache).name
     for e in ENCODERS:
         mark = "*" if e == chosen else " "
-        print(f"{mark} {e:<12} {LABELS[e]}")
+        failed = " (hat beim Kodieren versagt)" if e in prefs.failed else ""
+        print(f"{mark} {e:<12} {LABELS[e]}{failed}")
+    print(f"Grafikkarte verwenden: {GPU_MODES[prefs.mode]}")
+    if prefs.failed:
+        print(f"Gemerkte Panne: {failed_text(prefs)}")
     return 0
+
+
+def cmd_gui(ns: argparse.Namespace) -> int:
+    from slideshow.app.main import run_gui
+
+    return run_gui(ns.files)
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="slideshow", description="Jahresshow – Slideshow als MP4")
-    sub = p.add_subparsers(dest="command", required=True)
+    sub = p.add_subparsers(dest="command")
+
+    g = sub.add_parser("gui", help="Oberfläche starten (Standard)")
+    g.add_argument("files", nargs="*", help="Projektdatei oder Fotos/Videos zum Öffnen")
+    g.set_defaults(func=cmd_gui)
 
     r = sub.add_parser("render", help="Projekt als MP4 ausgeben")
     r.add_argument("project", help="Projektdatei (.json)")
@@ -120,5 +150,6 @@ def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    ns = build_parser().parse_args(argv)
+    args = sys.argv[1:] if argv is None else argv
+    ns = build_parser().parse_args(args or ["gui"])
     return int(ns.func(ns))

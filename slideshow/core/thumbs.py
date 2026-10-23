@@ -4,23 +4,34 @@ bleibt."""
 
 from __future__ import annotations
 
+import logging
+import os
+import sys
 import threading
+import time
 from collections.abc import Callable
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
-from PIL import Image, ImageOps
+from PIL import Image
 
 from slideshow.core.ffmpeg import run_ffmpeg
-from slideshow.core.importer import media_kind, video_info
+from slideshow.core.importer import media_kind, open_photo, video_info
 from slideshow.core.normalize import cached_normalized, tonemap_filter
 from slideshow.render.cache import (
     cleanup_tmp,
+    commit_tmp,
     default_cache_dir,
     file_fingerprint,
     make_key,
     tmp_path,
 )
+
+log = logging.getLogger(__name__)
+
+SYNCHRONIZE = 0x00100000  # Windows: Recht, auf das Ende eines Prozesses zu warten
+INFINITE = 0xFFFFFFFF
 
 THUMB_SIZE = 320  # längere Kante in Pixeln
 THUMB_VERSION = 1
@@ -33,9 +44,9 @@ def thumb_path(src: Path, cache_dir: Path, size: int = THUMB_SIZE) -> Path:
 
 
 def make_photo_thumb(src: Path, out: Path, size: int = THUMB_SIZE) -> None:
-    with Image.open(src) as im:
-        im.draft("RGB", (size, size))  # JPEG direkt verkleinert dekodieren: deutlich schneller
-        img = ImageOps.exif_transpose(im).convert("RGB")
+    # JPEG direkt verkleinert dekodieren: deutlich schneller. Beschädigte Bilder zeigen ihren
+    # lesbaren Teil, damit man sieht, ob „trotzdem verwenden“ sich lohnt
+    img = open_photo(src, draft=(size, size), tolerant=True)
     img.thumbnail((size, size), Image.Resampling.LANCZOS)
     img.save(out, "JPEG", quality=85)
 
@@ -52,6 +63,105 @@ def make_video_thumb(src: Path, out: Path, size: int = THUMB_SIZE,
     vf = f"{vf},scale=out_range=pc,format=yuvj420p"
     run_ffmpeg(["-ss", f"{at:.3f}", "-i", str(source), "-frames:v", "1", "-vf", vf,
                 "-q:v", "3", "-update", "1", str(out)])
+
+
+def create_thumb(src: Path, cache_dir: Path, size: int = THUMB_SIZE) -> Path:
+    """Vorschaubild erzeugen, falls noch nicht im Cache. Läuft auch in einem eigenen Prozess
+    (siehe ThumbProcessPool), daher eine freie Funktion."""
+    final = thumb_path(src, cache_dir, size)
+    if final.is_file():
+        return final
+    final.parent.mkdir(parents=True, exist_ok=True)
+    tmp = tmp_path(final)
+    try:
+        if media_kind(src) == "video":
+            make_video_thumb(src, tmp, size, cache_dir)
+        else:
+            make_photo_thumb(src, tmp, size)
+        commit_tmp(tmp, final)
+    finally:
+        cleanup_tmp(tmp)
+    return final
+
+
+def _warm_up() -> None:
+    """Nichts tun: lädt im Hilfsprozess nur die Module."""
+
+
+def _exit_with_parent(parent_pid: int) -> None:
+    """Hilfsprozess beendet sich, sobald das Hauptprogramm weg ist. Beim normalen Schließen
+    räumt das Programm selbst auf; nach einem Absturz oder Beenden per Task-Manager blieben
+    die Hilfsprozesse sonst liegen und belegen Speicher."""
+
+    def watch() -> None:
+        if sys.platform == "win32":
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(SYNCHRONIZE, False, parent_pid)
+            if not handle:  # schon beendet
+                os._exit(0)
+            kernel32.WaitForSingleObject(handle, INFINITE)
+        else:
+            while os.getppid() == parent_pid:
+                time.sleep(1)
+        os._exit(0)
+
+    threading.Thread(target=watch, name="parent-watch", daemon=True).start()
+
+
+class ThumbProcessPool:
+    """Vorschaubilder in eigenen Prozessen erzeugen. Fotos zu öffnen ist viel Python-Code
+    (Pillow); in Threads würde das die Oberfläche über den GIL ausbremsen."""
+
+    def __init__(self, cache_dir: Path, size: int = THUMB_SIZE, workers: int = 2) -> None:
+        self.cache_dir = cache_dir
+        self.size = size
+        self._workers = workers
+        self._pool: ProcessPoolExecutor | None = None
+        self._lock = threading.Lock()
+        self._failed = False
+
+    def _get_pool(self) -> ProcessPoolExecutor:
+        with self._lock:
+            if self._pool is None:
+                self._pool = ProcessPoolExecutor(max_workers=self._workers,
+                                                 initializer=_exit_with_parent,
+                                                 initargs=(os.getpid(),))
+            return self._pool
+
+    def start(self) -> None:
+        """Prozesse vorab starten (dauert etwas), damit das erste Scrollen nicht hakt."""
+        try:
+            pool = self._get_pool()
+            for f in [pool.submit(_warm_up) for _ in range(self._workers)]:
+                f.result()
+        except (RuntimeError, OSError, BrokenProcessPool):
+            self._fail()
+
+    def create(self, src: Path) -> Path:
+        if not self._failed:
+            try:
+                future = self._get_pool().submit(create_thumb, src, self.cache_dir, self.size)
+            except (RuntimeError, OSError, BrokenProcessPool):
+                self._fail()
+            else:
+                try:
+                    return future.result()
+                except BrokenProcessPool:
+                    self._fail()
+        # Notlösung, wenn keine Hilfsprozesse starten können: im eigenen Thread
+        return create_thumb(src, self.cache_dir, self.size)
+
+    def _fail(self) -> None:
+        log.warning("Hilfsprozesse für Vorschaubilder nicht verfügbar, verwende Threads")
+        self._failed = True
+
+    def shutdown(self, wait: bool = True) -> None:
+        with self._lock:
+            pool, self._pool = self._pool, None
+        if pool is not None:
+            pool.shutdown(wait=wait, cancel_futures=True)
 
 
 class ThumbnailCache:
@@ -75,20 +185,7 @@ class ThumbnailCache:
 
     def create(self, src: Path) -> Path:
         """Vorschaubild sofort erzeugen (blockiert)."""
-        final = self.path_for(src)
-        if final.is_file():
-            return final
-        final.parent.mkdir(parents=True, exist_ok=True)
-        tmp = tmp_path(final)
-        try:
-            if media_kind(src) == "video":
-                make_video_thumb(src, tmp, self.size, self.cache_dir)
-            else:
-                make_photo_thumb(src, tmp, self.size)
-            tmp.replace(final)
-        finally:
-            cleanup_tmp(tmp)
-        return final
+        return create_thumb(src, self.cache_dir, self.size)
 
     def request(self, src: Path,
                 callback: Callable[[Path, Future[Path]], None] | None = None) -> Future[Path]:
