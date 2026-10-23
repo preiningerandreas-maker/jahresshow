@@ -23,7 +23,13 @@ from slideshow.core.importer import (
     import_media,
     open_photo,
 )
-from slideshow.core.project import DAMAGE_MINOR_MIN, DAMAGE_USABLE_MIN, Item, Project
+from slideshow.core.project import (
+    DAMAGE_MINOR_MIN,
+    DAMAGE_USABLE_MIN,
+    SCHEMA_VERSION,
+    Item,
+    Project,
+)
 from slideshow.render.assemble import RenderError, RenderOptions, render_project
 
 REAL_DAMAGED = ("20180606_122427.jpg", "20180607_151823.jpg")
@@ -162,6 +168,21 @@ def test_damage_is_saved_in_project(damaged_set: dict[str, Path], tmp_path: Path
     assert loaded.damage == items[0].damage
     assert loaded.damage_readable == pytest.approx(items[0].damage_readable)
     assert loaded.use_damaged
+
+
+def test_damage_without_readable_share_is_not_used_automatically() -> None:
+    """Schadensmarkierung ohne lesbaren Anteil (z. B. ältere Projektdatei): gilt als
+    beschädigt, wird übersprungen und bietet kein „trotzdem verwenden“."""
+    it = Item("photo", path="kaputt.jpg", damage="Bilddaten sind fehlerhaft")
+    assert not it.damage_minor and not it.damage_usable
+    assert it.skip_damaged and not it.tolerant_load
+    it.use_damaged = True
+    assert it.skip_damaged
+    data = {"schema_version": SCHEMA_VERSION,
+            "items": [{"kind": "photo", "path": "kaputt.jpg",
+                       "damage": "Bilddaten sind fehlerhaft"}]}
+    loaded = Project.from_dict(data, Path(".")).items[0]
+    assert not loaded.damage_minor and loaded.skip_damaged
 
 
 def test_minor_damage_is_used_automatically(umlaut_dir: Path) -> None:

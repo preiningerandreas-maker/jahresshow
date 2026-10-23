@@ -872,13 +872,13 @@ def test_damaged_tile_shows_warning_badge(qtbot) -> None:  # noqa: ANN001
 
     from slideshow.app.timeline import TileDelegate, TimelineModel, TimelineView
 
-    # lesbar 0 %: echte Beschädigung (der Standardwert 1.0 hieße „leicht beschädigt“)
-    p = Project(items=[Item("photo", path="kaputt.jpg", damage="Bilddaten sind fehlerhaft",
-                            damage_readable=0.0),
+    # ohne Angabe des lesbaren Anteils: gilt als beschädigt, nicht als leicht beschädigt
+    p = Project(items=[Item("photo", path="kaputt.jpg", damage="Bilddaten sind fehlerhaft"),
                        Item("photo", path="gut.jpg"),
                        Item("photo", path="leicht.jpg", damage="Bilddaten sind fehlerhaft",
                             damage_readable=1.0)])
     model = TimelineModel(p, None)
+    assert model.tile(0).damaged and not model.tile(0).slightly_damaged
     view = TimelineView()
     qtbot.addWidget(view)
     view.setModel(model)

@@ -406,7 +406,7 @@ class MediaFile:
     content_ids: frozenset[str] = frozenset()
     content_id: str | None = None
     damage: str | None = None  # Grund, wenn die Bilddaten beschädigt sind
-    damage_readable: float = 1.0  # lesbarer Anteil eines beschädigten Bildes
+    damage_readable: float = 0.0  # lesbarer Anteil eines beschädigten Bildes; unbekannt = 0
 
     @property
     def portrait(self) -> bool:

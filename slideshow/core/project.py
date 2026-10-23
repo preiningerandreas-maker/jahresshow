@@ -68,7 +68,9 @@ class Item:
     chapter: str | None = None  # Kapitel "JJJJ-MM"; Titel mit Kapitel = Zwischentitel
     taken: str | None = None  # Aufnahmedatum ISO 8601, für die Kapitel
     damage: str | None = None  # Bilddaten beschädigt (Grund); None = in Ordnung
-    damage_readable: float = 1.0  # lesbarer Anteil eines beschädigten Bildes
+    # lesbarer Anteil eines beschädigten Bildes; unbekannt zählt als nicht lesbar, damit
+    # ein Schaden nie stillschweigend als „leicht beschädigt“ verwendet wird
+    damage_readable: float = 0.0
     use_damaged: bool = False  # beschädigtes Bild trotzdem verwenden (lesbarer Teil)
 
     @property
