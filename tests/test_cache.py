@@ -96,3 +96,33 @@ def test_project_save_leaves_no_temp_files(umlaut_dir: Path) -> None:
     p.save(target)
     p.save(target)
     assert [f.name for f in umlaut_dir.iterdir()] == ["Projekt Ö.json"]
+
+
+def test_data_folder_of_old_name_is_taken_over(tmp_path: Path,
+                                               monkeypatch: pytest.MonkeyPatch) -> None:
+    """Umbenennung Jahresshow -> Flashback: Umgewandelte Videos, Vorschaubilder und
+    Einstellungen aus dem alten Datenordner bleiben erhalten."""
+    from slideshow.render.cache import default_cache_dir
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    old = tmp_path / "Jahresshow" / "cache"
+    (old / "normalized").mkdir(parents=True)
+    (old / "normalized" / "Video Ö.mp4").write_bytes(b"umgewandelt")
+    (old / "grafikkarte.json").write_text('{"mode": "never"}', "utf-8")
+
+    cache = default_cache_dir()
+    assert cache == tmp_path / "Flashback" / "cache"
+    assert (cache / "normalized" / "Video Ö.mp4").read_bytes() == b"umgewandelt"
+    assert (cache / "grafikkarte.json").is_file()
+    assert not (tmp_path / "Jahresshow").exists()
+    # Gibt es den neuen Ordner schon, bleibt alles, wie es ist
+    (tmp_path / "Jahresshow").mkdir()
+    assert default_cache_dir() == cache and (tmp_path / "Jahresshow").is_dir()
+
+
+def test_fresh_install_uses_new_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from slideshow.render.cache import default_cache_dir
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    assert default_cache_dir() == tmp_path / "Flashback" / "cache"
+    assert not (tmp_path / "Jahresshow").exists()

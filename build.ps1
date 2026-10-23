@@ -1,4 +1,4 @@
-# Baut das Windows-Paket dist\Jahresshow (PyInstaller onedir).
+# Baut das Windows-Paket dist\Flashback (PyInstaller onedir).
 # Aufruf im Projektordner: powershell -ExecutionPolicy Bypass -File .\build.ps1
 # Voraussetzungen: .venv mit Python 3.12 und  pip install -e ".[dev,build]",
 # in bin\ der FFmpeg-Build "full_build-shared" von gyan.dev: aus dem Archiv der Inhalt von
@@ -12,7 +12,7 @@ Set-Location $PSScriptRoot
 $PyInstallerVersion = '6.22.3'  # wie in pyproject.toml [project.optional-dependencies] build
 $SizeLimitMB = 500
 $Python = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
-$Dist = Join-Path $PSScriptRoot 'dist\Jahresshow'
+$Dist = Join-Path $PSScriptRoot 'dist\Flashback'
 $Work = Join-Path $PSScriptRoot 'build\pyinstaller'
 
 function Fail($msg) { Write-Host "FEHLER: $msg" -ForegroundColor Red; exit 1 }
@@ -33,7 +33,7 @@ $FFmpegDlls = foreach ($lib in 'avcodec', 'avdevice', 'avfilter', 'avformat', 'a
     if ($found.Count -ne 1) { Fail "bin\$lib-*.dll: genau eine Datei erwartet, gefunden: $($found.Count)." }
     $found[0].FullName
 }
-# Alles da, was Jahresshow braucht? (Farbumrechnung, Kodierer, HEVC von Handyvideos)
+# Alles da, was Flashback braucht? (Farbumrechnung, Kodierer, HEVC von Handyvideos)
 $ffVersion = (& 'bin\ffmpeg.exe' -hide_banner -version) -join "`n"
 if ($ffVersion -notmatch '--enable-shared') { Fail "bin\ffmpeg.exe ist nicht der shared-Build." }
 $checks = @(
@@ -58,7 +58,7 @@ if ($LASTEXITCODE -eq 0 -and $commitTime) { $env:SOURCE_DATE_EPOCH = $commitTime
 
 Write-Host "PyInstaller $piVersion, Python $pyVersion"
 & $Python -m PyInstaller --noconfirm --clean --log-level WARN `
-    --distpath (Split-Path $Dist) --workpath $Work packaging\Jahresshow.spec
+    --distpath (Split-Path $Dist) --workpath $Work packaging\Flashback.spec
 if ($LASTEXITCODE -ne 0) { Fail "PyInstaller ist fehlgeschlagen ($LASTEXITCODE)." }
 
 Copy-Item (@('bin\ffmpeg.exe', 'bin\ffprobe.exe') + $FFmpegDlls) $Dist
@@ -69,7 +69,7 @@ if ($LASTEXITCODE -ne 0) { Fail "Lizenzen konnten nicht gesammelt werden." }
 $files = Get-ChildItem $Dist -Recurse -File
 $sizeMB = [math]::Round(($files | Measure-Object Length -Sum).Sum / 1MB, 1)
 Write-Host ""
-Write-Host "Fertig: $Dist\Jahresshow.exe"
+Write-Host "Fertig: $Dist\Flashback.exe"
 Write-Host "Dateien: $($files.Count), Groesse: $sizeMB MB"
 $isFFmpeg = { $_.DirectoryName -eq $Dist -and ($_.Name -in 'ffmpeg.exe', 'ffprobe.exe' -or $_.Extension -eq '.dll') }
 $isQt = { $_.FullName -match '\\(PySide6|shiboken6)\\' }

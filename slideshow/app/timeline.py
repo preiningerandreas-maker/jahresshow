@@ -65,7 +65,7 @@ from slideshow.core.importer import media_kind
 from slideshow.core.project import Item, Project, readable_text
 from slideshow.core.thumbs import ThumbnailCache, ThumbProcessPool
 
-MIME_ROWS = "application/x-jahresshow-rows"
+MIME_ROWS = "application/x-flashback-rows"
 # Kachelgröße (Breite des Vorschaubilds in logischen Pixeln), per Zoom-Regler einstellbar
 ZOOM_MIN, ZOOM_DEFAULT, ZOOM_MAX = 96, 160, 288
 LOAD_BOX = 256  # Vorschaubilder im Speicher: längere Seite in Pixeln

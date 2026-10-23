@@ -3,7 +3,7 @@
 python -m slideshow                      Oberfläche starten
 python -m slideshow gui [dateien ...]    Oberfläche mit Projekt oder Fotos/Videos starten
 python -m slideshow render <projekt.json> [-o out.mp4] [--encoder X] [--preview]
-Jahresshow.exe --render <projekt.json> [-o out.mp4]   dasselbe im fertigen Paket
+Flashback.exe --render <projekt.json> [-o out.mp4]    dasselbe im fertigen Paket
 """
 
 from __future__ import annotations
@@ -123,7 +123,7 @@ def cmd_gui(ns: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="slideshow", description="Jahresshow – Slideshow als MP4")
+    p = argparse.ArgumentParser(prog="slideshow", description="Flashback – Slideshow als MP4")
     sub = p.add_subparsers(dest="command")
 
     g = sub.add_parser("gui", help="Oberfläche starten (Standard)")
@@ -169,7 +169,7 @@ def normalize_args(args: list[str]) -> list[str]:
     """Aufrufe des fertigen Pakets auf die Befehle abbilden."""
     if not args:
         return ["gui"]
-    if args[0] == "--render":  # Kurzform: Jahresshow.exe --render projekt.json
+    if args[0] == "--render":  # Kurzform: Flashback.exe --render projekt.json
         return ["render", *args[1:]]
     if args[0] not in COMMANDS and not args[0].startswith("-"):
         # Dateien ohne Befehl, z. B. ein Projekt im Explorer auf die exe gezogen

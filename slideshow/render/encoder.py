@@ -104,7 +104,7 @@ def probe_command(encoder: str, workdir: Path) -> list[str]:
 
 
 def probe_encoder(encoder: str) -> bool:
-    with tempfile.TemporaryDirectory(prefix="jahresshow-probe-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="flashback-probe-") as tmp:
         try:
             res = subprocess.run(probe_command(encoder, Path(tmp)), capture_output=True,
                                  timeout=180, creationflags=CREATIONFLAGS, check=False)

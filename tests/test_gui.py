@@ -1085,3 +1085,27 @@ def test_export_summary_reports_gpu_failure(qtbot, auto_window: MainWindow,  # n
     item = w.project.items[int(m.group(1)) - 1]
     assert item.path is not None and Path(item.path).name == m.group(2)
     assert fake.qsv_calls == 3
+
+
+def test_name_and_copyright_visible(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    from slideshow import __version__
+
+    assert window.windowTitle() == "Neues Projekt – Flashback"
+    # Statusleiste: dauerhaft rechts unten, vollständig lesbar
+    label = window.copyright_label
+    assert label.text() == "© 2026 Andreas Preininger"
+    assert label.isVisible() and label.width() >= label.sizeHint().width()
+    assert label.parentWidget() is window.statusBar()
+    # Hilfe → Über Flashback
+    menus = {a.text(): a.menu() for a in window.menuBar().actions()}
+    assert "&Hilfe" in menus
+    entries = [a.text() for a in menus["&Hilfe"].actions()]
+    assert entries == ["Über Flashback …", "Über Qt …"]
+    shown: list[tuple[str, str]] = []
+    monkeypatch.setattr(QMessageBox, "about",
+                        lambda _parent, title, text: shown.append((title, text)))
+    window.act_about.trigger()
+    assert shown and shown[0][0] == "Über Flashback"
+    text = shown[0][1]
+    for part in ("Flashback", f"Version {__version__}", "© 2026 Andreas Preininger", "Lizenzen"):
+        assert part in text, part

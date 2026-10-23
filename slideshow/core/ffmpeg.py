@@ -36,7 +36,7 @@ def _candidate_dirs() -> list[Path]:
 
 def find_tool(name: str) -> Path:
     """Sucht ffmpeg/ffprobe: Umgebungsvariable, Programmordner, bin/, PATH."""
-    env = os.environ.get(f"JAHRESSHOW_{name.upper()}")
+    env = os.environ.get(f"FLASHBACK_{name.upper()}")
     if env and Path(env).is_file():
         return Path(env)
     exe = f"{name}.exe" if os.name == "nt" else name

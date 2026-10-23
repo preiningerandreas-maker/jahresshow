@@ -19,7 +19,7 @@ from pathlib import Path
 from PySide6.QtCore import QByteArray, QDir, QLockFile, QObject, Signal
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
-KEY_ENV = "JAHRESSHOW_INSTANCE_KEY"  # für Tests: eigene, unabhängige Instanz-Kennung
+KEY_ENV = "FLASHBACK_INSTANCE_KEY"  # für Tests: eigene, unabhängige Instanz-Kennung
 ASFW_ANY = -1
 
 
@@ -48,7 +48,7 @@ class SingleInstance(QObject):
     def __init__(self, key: str | None = None, parent: QObject | None = None) -> None:
         super().__init__(parent)
         key = key or default_key()
-        self.server_name = f"jahresshow-{key}"
+        self.server_name = f"flashback-{key}"
         lock_path = Path(QDir.tempPath()) / f"{self.server_name}.lock"
         self._lock = QLockFile(str(lock_path))
         # Nie wegen des Alters als verwaist ansehen, nur wenn der Prozess nicht mehr läuft

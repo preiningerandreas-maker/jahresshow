@@ -1,4 +1,4 @@
-"""Das fertige Windows-Paket (dist/Jahresshow, gebaut mit build.ps1).
+"""Das fertige Windows-Paket (dist/Flashback, gebaut mit build.ps1).
 
 Die Tests starten die echte exe in einer frischen PowerShell ohne venv und ohne Python im
 PATH. Ohne gebautes Paket werden sie übersprungen."""
@@ -19,8 +19,8 @@ from conftest import TESTS
 from mediacheck import assert_working_format, ffprobe
 
 ROOT = TESTS.parent
-DIST = ROOT / "dist" / "Jahresshow"
-EXE = DIST / "Jahresshow.exe"
+DIST = ROOT / "dist" / "Flashback"
+EXE = DIST / "Flashback.exe"
 SIZE_LIMIT_MB = 500
 # FFmpeg als „shared“-Build: ffmpeg.exe und ffprobe.exe teilen sich diese Bibliotheken
 FFMPEG_DLLS = ("avcodec", "avdevice", "avfilter", "avformat", "avutil", "swresample",
@@ -57,8 +57,8 @@ def clean_env(tmp_path: Path) -> dict[str, str]:
     """Umgebung wie bei einem normalen Nutzer: kein venv, kein Python im PATH, eigener
     Cache-Ordner (LOCALAPPDATA) und eigene Instanz-Kennung."""
     drop = {"VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHASHSEED",
-            "QT_QPA_PLATFORM", "QT_PLUGIN_PATH", "QT_SCALE_FACTOR", "JAHRESSHOW_FFMPEG",
-            "JAHRESSHOW_FFPROBE", "JAHRESSHOW_INSTANCE_KEY", "PYTEST_CURRENT_TEST"}
+            "QT_QPA_PLATFORM", "QT_PLUGIN_PATH", "QT_SCALE_FACTOR", "FLASHBACK_FFMPEG",
+            "FLASHBACK_FFPROBE", "FLASHBACK_INSTANCE_KEY", "PYTEST_CURRENT_TEST"}
     env = {k: v for k, v in os.environ.items() if k.upper() not in drop}
     path = [p for p in env.get("PATH", "").split(os.pathsep) if p and _no_python(p)]
     env["PATH"] = os.pathsep.join(path)
@@ -67,7 +67,7 @@ def clean_env(tmp_path: Path) -> dict[str, str]:
     appdata = tmp_path / "appdata"
     appdata.mkdir(exist_ok=True)
     env["LOCALAPPDATA"] = str(appdata)
-    env["JAHRESSHOW_INSTANCE_KEY"] = f"pkgtest-{os.getpid()}-{time.monotonic_ns()}"
+    env["FLASHBACK_INSTANCE_KEY"] = f"pkgtest-{os.getpid()}-{time.monotonic_ns()}"
     return env
 
 
@@ -103,7 +103,7 @@ def kill_tree(pid: int) -> None:
 
 
 def test_package_contents() -> None:
-    for name in ("Jahresshow.exe", "ffmpeg.exe", "ffprobe.exe", "README.txt"):
+    for name in ("Flashback.exe", "ffmpeg.exe", "ffprobe.exe", "README.txt"):
         assert (DIST / name).is_file(), name
     internal = DIST / "_internal" / "slideshow" / "assets"
     assert (internal / "fonts" / "NotoSans.ttf").is_file()
@@ -138,7 +138,7 @@ def test_package_contents() -> None:
 
 def test_packaged_ffmpeg_has_required_features(tmp_path: Path) -> None:
     """Das mitgelieferte FFmpeg (shared-Build mit den DLLs daneben) läuft ohne Hilfe von
-    außen und kann alles, was Jahresshow braucht."""
+    außen und kann alles, was Flashback braucht."""
     env = clean_env(tmp_path)
     env["PATH"] = os.pathsep.join(p for p in env["PATH"].split(os.pathsep)
                                   if not (Path(p) / "ffmpeg.exe").exists())
@@ -185,10 +185,47 @@ def test_package_size_and_qt_modules() -> None:
 
 def test_readme_for_end_users() -> None:
     text = (DIST / "README.txt").read_text(encoding="utf-8")
-    for needed in ("Jahresshow.exe", "Windows 10", "Windows 11", "8 GB Arbeitsspeicher",
+    # read_text liest die CRLF-Datei mit \n als Zeilenende
+    assert text.startswith("Flashback\n=========\n\n© 2026 Andreas Preininger\n")
+    for needed in ("Flashback.exe", "Windows 10", "Windows 11", "8 GB Arbeitsspeicher",
                    "SmartScreen", "Weitere Informationen", "Trotzdem ausführen", "Lizenzen"):
         assert needed in text, needed
     assert text == (ROOT / "packaging" / "README.txt").read_text(encoding="utf-8")
+
+
+def file_version_strings(path: Path) -> dict[str, str]:
+    """Datei-Eigenschaften (Details) einer exe, wie der Explorer sie zeigt."""
+    import ctypes
+
+    version = ctypes.windll.version
+    size = version.GetFileVersionInfoSizeW(str(path), None)
+    assert size, "keine Versionsangaben in der exe"
+    data = ctypes.create_string_buffer(size)
+    assert version.GetFileVersionInfoW(str(path), 0, size, data)
+    out = {}
+    for key in ("ProductName", "FileDescription", "LegalCopyright", "CompanyName",
+                "ProductVersion", "OriginalFilename"):
+        ptr, length = ctypes.c_wchar_p(), ctypes.c_uint()
+        if version.VerQueryValueW(data, f"\\StringFileInfo\\040704B0\\{key}",
+                                  ctypes.byref(ptr), ctypes.byref(length)):
+            out[key] = ptr.value
+    return out
+
+
+def test_exe_properties_show_name_and_copyright() -> None:
+    from slideshow import __version__
+
+    props = file_version_strings(EXE)
+    assert props == {
+        "ProductName": "Flashback",
+        "FileDescription": "Flashback – Slideshow aus Fotos und Videos",
+        "LegalCopyright": "© 2026 Andreas Preininger",
+        "CompanyName": "Andreas Preininger",
+        "ProductVersion": __version__,
+        "OriginalFilename": "Flashback.exe",
+    }
+    assert "© 2026 Andreas Preininger" in (DIST / "Lizenzen" / "UEBERSICHT.txt").read_text(
+        encoding="utf-8")
 
 
 def test_launcher_calls_freeze_support_first() -> None:
@@ -207,7 +244,7 @@ def test_imports_50_photos_one_window_helpers_end(tmp_path: Path) -> None:
     env = clean_env(tmp_path)
     folder = tmp_path / "Urlaub Wörthersee 2026"
     make_photos(folder, 50)
-    thumbs = Path(env["LOCALAPPDATA"]) / "Jahresshow" / "cache" / "thumbs"
+    thumbs = Path(env["LOCALAPPDATA"]) / "Flashback" / "cache" / "thumbs"
     pid = start_exe(env, str(folder))
     seen: set = set()
     window_counts: list[int] = []
@@ -221,7 +258,7 @@ def test_imports_50_photos_one_window_helpers_end(tmp_path: Path) -> None:
 
         def ready() -> bool:
             wins = sample()
-            helpers = [p for p in seen if p.name.lower() == "jahresshow.exe"]
+            helpers = [p for p in seen if p.name.lower() == "flashback.exe"]
             n_thumbs = len(list(thumbs.glob("*.jpg"))) if thumbs.is_dir() else 0
             return (len(wins) == 1 and wins[0].title.startswith("*") and n_thumbs >= 5
                     and bool(helpers))
@@ -231,11 +268,11 @@ def test_imports_50_photos_one_window_helpers_end(tmp_path: Path) -> None:
             sample()
             time.sleep(0.25)
         wins = sample()
-        assert len(wins) == 1 and wins[0].pid == pid and "Jahresshow" in wins[0].title
+        assert len(wins) == 1 and wins[0].pid == pid and "Flashback" in wins[0].title
         assert max(window_counts) == 1, window_counts
         # Beide Hilfsprozesse laufen dauerhaft. Ohne freeze_support würden sie sofort mit
         # einem Fehler enden und die Vorschaubilder entstünden ersatzweise in Threads.
-        helpers = [p for p in seen if p.name.lower() == "jahresshow.exe" and alive(p)]
+        helpers = [p for p in seen if p.name.lower() == "flashback.exe" and alive(p)]
         assert len(helpers) == 2, seen
 
         close_window(wins[0].hwnd)
@@ -253,7 +290,7 @@ def test_helpers_end_when_main_process_is_killed(tmp_path: Path) -> None:
     env = clean_env(tmp_path)
     pid = start_exe(env)
     try:
-        assert wait_for(lambda: any(p.name.lower() == "jahresshow.exe"
+        assert wait_for(lambda: any(p.name.lower() == "flashback.exe"
                                     for p in descendants(pid)), 120)
         helpers = descendants(pid)
         subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, check=True)
@@ -264,7 +301,7 @@ def test_helpers_end_when_main_process_is_killed(tmp_path: Path) -> None:
 
 
 def test_render_demo_passes_m1_check(synthetic: Path, tmp_path: Path) -> None:
-    """Jahresshow.exe --render tests/demo.json -o …/pkg.mp4 in frischer PowerShell: dieselbe
+    """Flashback.exe --render tests/demo.json -o …/pkg.mp4 in frischer PowerShell: dieselbe
     ffprobe-Prüfung wie in M1, mit bt709-Farbangaben."""
     from slideshow.core.importer import clip_length
     from slideshow.core.project import FPS, Project

@@ -15,7 +15,7 @@ def test_render_short_form() -> None:
 
 
 def test_files_without_command_open_gui() -> None:
-    """Projekt oder Ordner im Explorer auf Jahresshow.exe gezogen."""
+    """Projekt oder Ordner im Explorer auf Flashback.exe gezogen."""
     assert normalize_args([r"C:\Fotos\Urlaub Wörthersee 2026"]) == \
         ["gui", r"C:\Fotos\Urlaub Wörthersee 2026"]
     assert normalize_args(["Projekt.json", "a.jpg"]) == ["gui", "Projekt.json", "a.jpg"]
