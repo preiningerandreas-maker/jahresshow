@@ -47,8 +47,16 @@ def opened() -> list[Path]:
 
 
 @pytest.fixture
-def window(qtbot, tmp_path: Path, opened: list[Path]):  # noqa: ANN001, ANN201
-    w = MainWindow(cache_dir=tmp_path / "cache", encoder="libx264", open_file=opened.append)
+def revealed() -> list[Path]:
+    """Im Explorer gezeigte Dateien (statt den echten Explorer zu öffnen)."""
+    return []
+
+
+@pytest.fixture
+def window(qtbot, tmp_path: Path, opened: list[Path],  # noqa: ANN001, ANN201
+           revealed: list[Path]):
+    w = MainWindow(cache_dir=tmp_path / "cache", encoder="libx264", open_file=opened.append,
+                   reveal_file=revealed.append)
     w.ask_duplicates = lambda outcome: False  # type: ignore[method-assign]
     qtbot.addWidget(w)
     w.resize(1280, 700)
@@ -380,7 +388,7 @@ def test_export_size_warning_over_4gb(qtbot, window: MainWindow, synthetic: Path
 
 @pytest.mark.slow
 def test_export_start_and_cancel(qtbot, window: MainWindow, synthetic: Path,  # noqa: ANN001
-                                 umlaut_dir: Path) -> None:
+                                 umlaut_dir: Path, revealed: list[Path]) -> None:
     p = photos_project(synthetic, umlaut_dir)
     for it in p.items:
         it.duration = 30.0  # lange genug, um mittendrin abzubrechen
@@ -414,11 +422,12 @@ def test_export_start_and_cancel(qtbot, window: MainWindow, synthetic: Path,  # 
     assert not list(umlaut_dir.glob("*.part*"))
     assert "Abgebrochen" in window.notice.label.text()
     assert window.act_export.isEnabled() and window.act_preview.isEnabled()
+    assert revealed == []  # abgebrochen: kein Explorer
 
 
 @pytest.mark.slow
 def test_export_finishes(qtbot, window: MainWindow, synthetic: Path,  # noqa: ANN001
-                         umlaut_dir: Path) -> None:
+                         umlaut_dir: Path, revealed: list[Path], opened: list[Path]) -> None:
     p = photos_project(synthetic, umlaut_dir)
     for it in p.items:
         it.duration = 1.5
@@ -428,12 +437,19 @@ def test_export_finishes(qtbot, window: MainWindow, synthetic: Path,  # noqa: AN
     wait_render(qtbot, window)
     assert out.is_file() and window.last_result is not None
     assert window.notice.kind == "success" and "Fertig" in window.notice.label.text()
+    # Explorer öffnet sich von selbst mit dem fertigen Video (markiert), kein Player
+    assert revealed == [out] and opened == []
+    # „Ordner öffnen“ in der Meldung zeigt dieselbe Datei noch einmal
+    assert window.notice.action_button.text() == "Ordner öffnen"
+    qtbot.mouseClick(window.notice.action_button, Qt.MouseButton.LeftButton)
+    assert revealed == [out, out]
 
 
 @pytest.mark.slow
 def test_preview_shows_notice_when_originals_are_used(qtbot, window: MainWindow,  # noqa: ANN001
                                                       synthetic: Path, umlaut_dir: Path,
                                                       opened: list[Path],
+                                                      revealed: list[Path],
                                                       monkeypatch: pytest.MonkeyPatch) -> None:
     (video,) = copy_media(synthetic, umlaut_dir, "HDR HLG.mp4")
     monkeypatch.setattr(window.video_prep, "submit", lambda paths: 0)  # noch nicht umgewandelt
@@ -450,6 +466,7 @@ def test_preview_shows_notice_when_originals_are_used(qtbot, window: MainWindow,
     wait_render(qtbot, window)
     assert not window.render_dialog.isVisible()
     assert opened and opened[-1].is_file()  # Vorschau wird geöffnet
+    assert revealed == []  # Vorschau öffnet den Player, nicht den Explorer
     assert window.notice.isVisible() and window.notice.kind == "warning"
     assert "Original" in window.notice.label.text()
     assert "HDR HLG.mp4" in window.notice.label.text()
@@ -1002,7 +1019,8 @@ def auto_window(qtbot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):  # noqa
     from slideshow.render import encoder
 
     monkeypatch.setattr(encoder, "probe_encoder", lambda name: name in ("h264_qsv", "libx264"))
-    w = MainWindow(cache_dir=tmp_path / "cache", open_file=lambda _p: None)
+    w = MainWindow(cache_dir=tmp_path / "cache", open_file=lambda _p: None,
+                   reveal_file=lambda _p: None)
     qtbot.addWidget(w)
     yield w
     w.shutdown()
