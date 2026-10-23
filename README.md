@@ -9,8 +9,12 @@ Meilenstein 4.
 - **Python 3.12.10** von python.org (64 Bit, mit dem Python-Launcher `py`); damit ist
   `.venv` angelegt und alles getestet. Prüfen in PowerShell: `py -3.12 --version` muss
   `Python 3.12.10` melden.
-- **FFmpeg**: Full Build von gyan.dev. `ffmpeg.exe` und `ffprobe.exe` kommen in den Ordner
-  `bin\` im Projektordner (nicht im Git).
+- **FFmpeg**: `ffmpeg-9.0.2-full_build-shared.zip` von gyan.dev (GitHub `GyanD/codexffmpeg`,
+  Release 9.0.2, SHA-256 `8d31e162f1616e37aab3fa2db991b97e1b8dbeb1c8465fd81a81be16ff91b328`).
+  In den Ordner `bin\` im Projektordner (nicht im Git) kommen aus dem Archiv der Inhalt von
+  `bin\` ohne `ffplay.exe` (`ffmpeg.exe`, `ffprobe.exe` und sieben DLLs) sowie `LICENSE` und
+  `README.txt`. Der shared-Build kann dasselbe wie der statische Full Build, ist aber nur halb
+  so groß, weil sich ffmpeg.exe und ffprobe.exe die Bibliotheken teilen.
 - **Kurzer Projektpfad**, z. B. `C:\dev\jahresshow`. PySide6 enthält sehr tief
   verschachtelte Dateien. In einem langen Pfad bricht die Installation mit
   „No such file or directory … Long Path support“ ab, solange Windows lange Pfade nicht
@@ -74,6 +78,28 @@ Benutzer: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
 Zwischendateien (umgewandelte Videos, Segmente, Vorschaubilder) liegen in
 `%LOCALAPPDATA%\Jahresshow\cache` und können jederzeit gelöscht werden, dann wird neu
 berechnet.
+
+## Windows-Paket bauen
+
+```powershell
+.venv\Scripts\python.exe -m pip install -e ".[dev,build]"   # einmalig: PyInstaller
+powershell -ExecutionPolicy Bypass -File .\build.ps1
+```
+
+Ergebnis ist der Ordner `dist\Jahresshow` (PyInstaller onedir) mit `Jahresshow.exe`,
+`ffmpeg.exe`, `ffprobe.exe` samt FFmpeg-DLLs, `README.txt` für Endnutzer und dem Ordner
+`Lizenzen`. `build.ps1` prüft vorher, dass FFmpeg zscale, tonemap, xfade, h264_qsv, libx264
+und den HEVC-Decoder enthält. Weitergeben
+wird der ganze Ordner, zum Beispiel als ZIP. Jeder Lauf baut von vorn; die Spezifikation steht
+in `packaging\Jahresshow.spec`, die Endnutzer-README in `packaging\README.txt`.
+
+Die gepackte exe ist ein Fensterprogramm. Auf der Kommandozeile rendert sie mit
+`Jahresshow.exe --render projekt.json -o video.mp4`. PowerShell wartet bei Fensterprogrammen
+nur, wenn die Ausgabe weitergeleitet wird, also mit `| Out-Host` am Ende.
+
+Die Tests in `tests\test_package.py` prüfen das gebaute Paket (frische PowerShell ohne
+Python, 50 Fotos, Hilfsprozesse, Render mit ffprobe-Prüfung). Ohne `dist\Jahresshow` werden
+sie übersprungen.
 
 ## Prüfen vor jedem Commit
 

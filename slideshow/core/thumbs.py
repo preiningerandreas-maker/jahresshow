@@ -32,6 +32,8 @@ log = logging.getLogger(__name__)
 
 SYNCHRONIZE = 0x00100000  # Windows: Recht, auf das Ende eines Prozesses zu warten
 INFINITE = 0xFFFFFFFF
+JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 
 THUMB_SIZE = 320  # längere Kante in Pixeln
 THUMB_VERSION = 1
@@ -110,6 +112,92 @@ def _exit_with_parent(parent_pid: int) -> None:
     threading.Thread(target=watch, name="parent-watch", daemon=True).start()
 
 
+_job_lock = threading.Lock()
+_job_handle: int | None = None
+
+
+def _kill_on_close_job() -> int | None:
+    """Windows-Job-Objekt, das alle Prozesse darin beendet, sobald das Hauptprogramm weg ist,
+    auch nach Absturz oder Beenden per Task-Manager. _exit_with_parent greift erst, wenn der
+    Hilfsprozess fertig gestartet ist; stirbt das Hauptprogramm vorher, bliebe er hängen."""
+    global _job_handle
+    with _job_lock:
+        if _job_handle is None:
+            import ctypes
+            from ctypes import wintypes
+
+            class BasicLimits(ctypes.Structure):
+                _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
+                            ("PerJobUserTimeLimit", ctypes.c_int64),
+                            ("LimitFlags", wintypes.DWORD),
+                            ("MinimumWorkingSetSize", ctypes.c_size_t),
+                            ("MaximumWorkingSetSize", ctypes.c_size_t),
+                            ("ActiveProcessLimit", wintypes.DWORD),
+                            ("Affinity", ctypes.c_size_t),
+                            ("PriorityClass", wintypes.DWORD),
+                            ("SchedulingClass", wintypes.DWORD)]
+
+            class ExtendedLimits(ctypes.Structure):
+                _fields_ = [("BasicLimitInformation", BasicLimits),
+                            ("IoInfo", ctypes.c_uint64 * 6),
+                            ("ProcessMemoryLimit", ctypes.c_size_t),
+                            ("JobMemoryLimit", ctypes.c_size_t),
+                            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                            ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+            kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+            kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                                         ctypes.c_void_p, wintypes.DWORD]
+            job = kernel32.CreateJobObjectW(None, None)
+            info = ExtendedLimits()
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            if not job or not kernel32.SetInformationJobObject(
+                    job, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, ctypes.byref(info),
+                    ctypes.sizeof(info)):
+                log.warning("Job-Objekt für Hilfsprozesse nicht verfügbar (%s)",
+                            ctypes.get_last_error())
+                return None
+            _job_handle = job  # bleibt offen, bis das Hauptprogramm endet
+        return _job_handle
+
+
+def _assign_to_job(process_handle: int) -> None:
+    """Hilfsprozess in das Job-Objekt aufnehmen. Fehler sind nicht schlimm: Dann bleibt es
+    bei _exit_with_parent."""
+    job = _kill_on_close_job()
+    if job is None:
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    if not kernel32.AssignProcessToJobObject(job, process_handle):
+        log.warning("Hilfsprozess nicht im Job-Objekt (%s)", ctypes.get_last_error())
+
+
+if sys.platform == "win32":
+    from multiprocessing.context import SpawnContext, SpawnProcess
+
+    class _JobProcess(SpawnProcess):
+        """Hilfsprozess, der gleich nach dem Start ins Job-Objekt kommt."""
+
+        def start(self) -> None:
+            super().start()
+            _assign_to_job(self._popen._handle)  # type: ignore[union-attr]
+
+    class _JobContext(SpawnContext):
+        Process = _JobProcess
+
+    def _mp_context() -> SpawnContext | None:
+        return _JobContext()
+else:
+    def _mp_context() -> None:
+        return None
+
+
 class ThumbProcessPool:
     """Vorschaubilder in eigenen Prozessen erzeugen. Fotos zu öffnen ist viel Python-Code
     (Pillow); in Threads würde das die Oberfläche über den GIL ausbremsen."""
@@ -126,6 +214,7 @@ class ThumbProcessPool:
         with self._lock:
             if self._pool is None:
                 self._pool = ProcessPoolExecutor(max_workers=self._workers,
+                                                 mp_context=_mp_context(),
                                                  initializer=_exit_with_parent,
                                                  initargs=(os.getpid(),))
             return self._pool
