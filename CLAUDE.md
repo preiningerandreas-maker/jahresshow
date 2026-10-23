@@ -106,3 +106,4 @@ Text mit Pillow als transparentes PNG rendern, per overlay einblenden. Kein draw
 - Type Hints, `ruff check` sauber, `pytest` grün vor jedem Commit
 - Arbeiten auf Branch pro Meilenstein, kleine Commits
 - Keine neuen Abhängigkeiten ohne Begründung im Commit
+- Tests nie abschwächen, damit sie bestehen. Schlägt ein Test fehl, wird der Code repariert. Nur wenn der Test nachweislich falsch ist, darf er geändert werden, mit Begründung im Commit.
