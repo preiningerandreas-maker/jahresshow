@@ -27,6 +27,18 @@ DAMAGE_USABLE_MIN = 0.8
 DAMAGE_MINOR_MIN = 0.99
 
 
+def readable_at_least(readable: float | None, minimum: float) -> bool:
+    """Lesbarer Anteil mindestens minimum; unbekannt (None) zählt als nicht lesbar."""
+    return readable is not None and readable >= minimum
+
+
+def readable_text(readable: float | None) -> str:
+    """„lesbar 95 %“ oder „lesbarer Anteil unbekannt“."""
+    if readable is None:
+        return "lesbarer Anteil unbekannt"
+    return f"lesbar {round(readable * 100)} %"
+
+
 def to_frames(seconds: float) -> int:
     return round(seconds * FPS)
 
@@ -68,19 +80,21 @@ class Item:
     chapter: str | None = None  # Kapitel "JJJJ-MM"; Titel mit Kapitel = Zwischentitel
     taken: str | None = None  # Aufnahmedatum ISO 8601, für die Kapitel
     damage: str | None = None  # Bilddaten beschädigt (Grund); None = in Ordnung
-    # lesbarer Anteil eines beschädigten Bildes; unbekannt zählt als nicht lesbar, damit
-    # ein Schaden nie stillschweigend als „leicht beschädigt“ verwendet wird
-    damage_readable: float = 0.0
+    # lesbarer Anteil eines beschädigten Bildes; None = unbekannt, zählt als nicht lesbar,
+    # damit ein Schaden nie stillschweigend als „leicht beschädigt“ verwendet wird
+    damage_readable: float | None = None
     use_damaged: bool = False  # beschädigtes Bild trotzdem verwenden (lesbarer Teil)
 
     @property
     def damage_usable(self) -> bool:
-        return self.damage is not None and self.damage_readable >= DAMAGE_USABLE_MIN
+        return self.damage is not None and readable_at_least(self.damage_readable,
+                                                             DAMAGE_USABLE_MIN)
 
     @property
     def damage_minor(self) -> bool:
         """Leicht beschädigt, aber vollständig lesbar: wird ohne Nachfrage verwendet."""
-        return self.damage is not None and self.damage_readable >= DAMAGE_MINOR_MIN
+        return self.damage is not None and readable_at_least(self.damage_readable,
+                                                             DAMAGE_MINOR_MIN)
 
     @property
     def skip_damaged(self) -> bool:

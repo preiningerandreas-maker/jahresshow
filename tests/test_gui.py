@@ -879,6 +879,9 @@ def test_damaged_tile_shows_warning_badge(qtbot) -> None:  # noqa: ANN001
                             damage_readable=1.0)])
     model = TimelineModel(p, None)
     assert model.tile(0).damaged and not model.tile(0).slightly_damaged
+    tip = model.data(model.index(0), Qt.ItemDataRole.ToolTipRole)
+    assert "Beschädigt: Bilddaten sind fehlerhaft, lesbarer Anteil unbekannt" in tip
+    assert "lesbar 0 %" not in tip and "übersprungen" in tip
     view = TimelineView()
     qtbot.addWidget(view)
     view.setModel(model)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import random
 import shutil
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from PIL import Image, ImageFile
 from slideshow.core.chapters import apply_chapters, media_items
 from slideshow.core.importer import (
     DamagedFile,
+    MediaFile,
     check_photo,
     damage_message,
     describe_file,
@@ -29,8 +31,9 @@ from slideshow.core.project import (
     SCHEMA_VERSION,
     Item,
     Project,
+    readable_text,
 )
-from slideshow.render.assemble import RenderError, RenderOptions, render_project
+from slideshow.render.assemble import RenderError, RenderOptions, SkippedFile, render_project
 
 REAL_DAMAGED = ("20180606_122427.jpg", "20180607_151823.jpg")
 
@@ -182,7 +185,23 @@ def test_damage_without_readable_share_is_not_used_automatically() -> None:
             "items": [{"kind": "photo", "path": "kaputt.jpg",
                        "damage": "Bilddaten sind fehlerhaft"}]}
     loaded = Project.from_dict(data, Path(".")).items[0]
+    assert loaded.damage_readable is None
     assert not loaded.damage_minor and loaded.skip_damaged
+
+
+def test_unknown_readable_share_is_shown_as_unknown(tmp_path: Path) -> None:
+    """Unbekannter Anteil: „lesbarer Anteil unbekannt“ statt „lesbar 0 %“. Ein gemessener
+    Anteil von 0 % (Datenmüll) bleibt „lesbar 0 %“."""
+    assert readable_text(None) == "lesbarer Anteil unbekannt"
+    assert readable_text(0.0) == "lesbar 0 %"
+    assert readable_text(0.954) == "lesbar 95 %"
+    m = MediaFile(tmp_path / "kaputt.jpg", "photo", datetime(2026, 1, 1, tzinfo=UTC), "file",
+                  100, 100, 1000, damage="Bilddaten sind fehlerhaft")
+    text = damage_message(m)
+    assert "lesbarer Anteil unbekannt" in text and "lesbar 0 %" not in text
+    assert "übersprungen" in text and "Trotzdem verwenden" not in text
+    skipped = SkippedFile(tmp_path / "kaputt.jpg", "Bilddaten sind fehlerhaft", None)
+    assert not skipped.usable and "lesbar" not in skipped.message()
 
 
 def test_minor_damage_is_used_automatically(umlaut_dir: Path) -> None:

@@ -42,6 +42,8 @@ from slideshow.core.project import (
     Item,
     Project,
     TimelineEntry,
+    readable_at_least,
+    readable_text,
 )
 from slideshow.render.audio import build_music, duck_ranges
 from slideshow.render.cache import (
@@ -173,16 +175,16 @@ class SkippedFile:
 
     path: Path
     reason: str
-    readable: float = 0.0  # lesbarer Anteil (Fotos)
+    readable: float | None = 0.0  # lesbarer Anteil (Fotos); None = unbekannt
 
     @property
     def usable(self) -> bool:
-        return self.readable >= DAMAGE_USABLE_MIN
+        return readable_at_least(self.readable, DAMAGE_USABLE_MIN)
 
     def message(self) -> str:
         text = f"{describe_file(self.path)}: {self.reason}"
         if self.usable:
-            text += (f" (lesbar {round(self.readable * 100)} %, in den Eigenschaften "
+            text += (f" ({readable_text(self.readable)}, in den Eigenschaften "
                      "„Trotzdem verwenden“ möglich)")
         return text
 
@@ -419,7 +421,8 @@ def render_project(
                                               cancel=cancel)
             except DamagedFile as err:
                 info = damaged_at_render(err.path, err.reason)
-                if e.item.damage is None and info.readable >= DAMAGE_MINOR_MIN:
+                if e.item.damage is None and readable_at_least(info.readable,
+                                                               DAMAGE_MINOR_MIN):
                     log.info("Leicht beschädigt, wird verwendet: %s", err)
                     add_skipped(result.minor, info)
                     marked = (e.item, replace(e.item, damage=info.reason,

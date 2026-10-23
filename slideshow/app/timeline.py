@@ -62,7 +62,7 @@ from slideshow.app.theme import RADIUS, color
 from slideshow.core.chapters import is_chapter_title
 from slideshow.core.edit import move_items
 from slideshow.core.importer import media_kind
-from slideshow.core.project import Item, Project
+from slideshow.core.project import Item, Project, readable_text
 from slideshow.core.thumbs import ThumbnailCache, ThumbProcessPool
 
 MIME_ROWS = "application/x-jahresshow-rows"
@@ -343,8 +343,7 @@ class TimelineModel(QAbstractListModel):
         if item.damage_minor:
             lines.append(MINOR_DAMAGE_TIP)
         elif item.damage is not None:
-            lines.append(f"Beschädigt: {item.damage}, lesbar "
-                         f"{round(item.damage_readable * 100)} %")
+            lines.append(f"Beschädigt: {item.damage}, {readable_text(item.damage_readable)}")
             lines.append("Wird trotzdem verwendet (lesbarer Teil)" if not item.skip_damaged
                          else "Wird beim Export übersprungen")
         return "\n".join(lines)

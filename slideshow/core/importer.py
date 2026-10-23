@@ -18,7 +18,12 @@ from pathlib import Path
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from slideshow.core.ffmpeg import Cancelled, FFmpegError, probe
-from slideshow.core.project import DAMAGE_MINOR_MIN, DAMAGE_USABLE_MIN
+from slideshow.core.project import (
+    DAMAGE_MINOR_MIN,
+    DAMAGE_USABLE_MIN,
+    readable_at_least,
+    readable_text,
+)
 
 try:
     from pillow_heif import register_heif_opener
@@ -406,7 +411,7 @@ class MediaFile:
     content_ids: frozenset[str] = frozenset()
     content_id: str | None = None
     damage: str | None = None  # Grund, wenn die Bilddaten beschädigt sind
-    damage_readable: float = 0.0  # lesbarer Anteil eines beschädigten Bildes; unbekannt = 0
+    damage_readable: float | None = None  # lesbarer Anteil, None = unbekannt
 
     @property
     def portrait(self) -> bool:
@@ -414,7 +419,8 @@ class MediaFile:
 
     @property
     def damage_minor(self) -> bool:
-        return self.damage is not None and self.damage_readable >= DAMAGE_MINOR_MIN
+        return self.damage is not None and readable_at_least(self.damage_readable,
+                                                             DAMAGE_MINOR_MIN)
 
 
 @dataclass
@@ -441,9 +447,9 @@ def damage_message(m: MediaFile) -> str:
     if m.damage_minor:
         return (f"{describe_file(m.path)} ist leicht beschädigt ({m.damage}), aber "
                 "vollständig lesbar und wird verwendet.")
-    text = (f"{describe_file(m.path)} ist beschädigt: {m.damage}, lesbar "
-            f"{round(m.damage_readable * 100)} %. Wird beim Export übersprungen")
-    if m.damage_readable >= DAMAGE_USABLE_MIN:
+    text = (f"{describe_file(m.path)} ist beschädigt: {m.damage}, "
+            f"{readable_text(m.damage_readable)}. Wird beim Export übersprungen")
+    if readable_at_least(m.damage_readable, DAMAGE_USABLE_MIN):
         text += ", außer Sie wählen in den Eigenschaften „Trotzdem verwenden“"
     return text + "."
 

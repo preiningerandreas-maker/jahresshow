@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 
 from slideshow.core.chapters import chapter_title, is_chapter_title
 from slideshow.core.importer import PHOTO_EXTS, describe_file
-from slideshow.core.project import Item, Project, TextOverlay
+from slideshow.core.project import Item, Project, TextOverlay, readable_text
 
 FIT_LABELS = {
     "blur": "Unscharfer Hintergrund",
@@ -312,8 +312,8 @@ class ItemPanel(QWidget):
                 lines.append(f"{describe_file(self.project.resolve(it.path))}: Datei leicht "
                              "beschädigt, vollständig lesbar. Wird verwendet.")
                 continue
-            line = (f"{describe_file(self.project.resolve(it.path))}: {it.damage}, lesbar "
-                    f"{round(it.damage_readable * 100)} %.")
+            line = (f"{describe_file(self.project.resolve(it.path))}: {it.damage}, "
+                    f"{readable_text(it.damage_readable)}.")
             if it.skip_damaged:
                 line += " Wird beim Export übersprungen."
             else:
