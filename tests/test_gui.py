@@ -928,3 +928,16 @@ def test_export_marks_damage_found_late(qtbot, window: MainWindow,  # noqa: ANN0
     assert window.model.tile(1).damaged
     assert "„Trotzdem verwenden“ möglich" in window.notice.label.text()
 
+
+def test_main_window_never_narrower_than_toolbar(qtbot, window: MainWindow) -> None:  # noqa: ANN001
+    """Mindestbreite: „Video erstellen“ rutscht nie ins Überlaufmenü, auch wenn man das
+    Fenster ganz schmal zieht."""
+    from slideshow.app.layoutcheck import toolbar_button_state
+
+    tb = window.toolbar
+    assert window.minimumSizeHint().width() >= tb.sizeHint().width()
+    window.resize(300, 500)
+    qtbot.wait(50)
+    assert window.width() >= tb.sizeHint().width()
+    assert toolbar_button_state(window, window.export_button) == {
+        "visible": True, "in_window": True, "in_toolbar": True, "in_overflow": False}

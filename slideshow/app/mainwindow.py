@@ -124,6 +124,15 @@ class ImportOutcome:
         return self.result.duplicates + self.existing_duplicates
 
 
+class MainToolBar(QToolBar):
+    """Werkzeugleiste, die nie ins Überlaufmenü umbricht: Ihre Mindestbreite ist die ganze
+    Zeile. Damit kann das Hauptfenster nicht schmaler werden, als „Video erstellen“ braucht."""
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        hint = super().minimumSizeHint()
+        return QSize(max(hint.width(), self.sizeHint().width()), hint.height())
+
+
 class NoticeBar(QFrame):
     """Hinweis über den Bereichen (bleibt, bis er geschlossen wird). Die Art erkennt man am
     Symbol, nicht an einer Farbe: Blau ist der Auswahl vorbehalten."""
@@ -396,7 +405,7 @@ class MainWindow(QMainWindow):
         m.addAction(self.act_preview)
         m.addAction(self.act_export)
 
-        tb = QToolBar("Werkzeuge")
+        tb = MainToolBar("Werkzeuge")
         tb.setObjectName("mainToolbar")
         tb.setMovable(False)
         tb.setIconSize(QSize(20, 20))
