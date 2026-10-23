@@ -14,10 +14,10 @@ from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
-from PIL import Image, ImageOps
+from PIL import Image
 
 from slideshow.core.ffmpeg import run_ffmpeg
-from slideshow.core.importer import media_kind, video_info
+from slideshow.core.importer import media_kind, open_photo, video_info
 from slideshow.core.normalize import cached_normalized, tonemap_filter
 from slideshow.render.cache import (
     cleanup_tmp,
@@ -44,9 +44,9 @@ def thumb_path(src: Path, cache_dir: Path, size: int = THUMB_SIZE) -> Path:
 
 
 def make_photo_thumb(src: Path, out: Path, size: int = THUMB_SIZE) -> None:
-    with Image.open(src) as im:
-        im.draft("RGB", (size, size))  # JPEG direkt verkleinert dekodieren: deutlich schneller
-        img = ImageOps.exif_transpose(im).convert("RGB")
+    # JPEG direkt verkleinert dekodieren: deutlich schneller. Beschädigte Bilder zeigen ihren
+    # lesbaren Teil, damit man sieht, ob „trotzdem verwenden“ sich lohnt
+    img = open_photo(src, draft=(size, size), tolerant=True)
     img.thumbnail((size, size), Image.Resampling.LANCZOS)
     img.save(out, "JPEG", quality=85)
 

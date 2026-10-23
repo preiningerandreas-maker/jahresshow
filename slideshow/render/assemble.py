@@ -8,6 +8,7 @@ Summe(Segmentlängen) - Summe(Übergänge)."""
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import shutil
@@ -17,15 +18,29 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from slideshow.core.ffmpeg import Cancelled, run_ffmpeg
-from slideshow.core.importer import clip_length
+from slideshow.core.ffmpeg import Cancelled, FFmpegError, run_ffmpeg
+from slideshow.core.importer import (
+    DamagedFile,
+    check_photo,
+    clip_length,
+    describe_file,
+    media_kind,
+)
 from slideshow.core.normalize import (
     NormalizeProgress,
     cached_normalized,
     is_running,
     normalize_video,
 )
-from slideshow.core.project import FPS, PREVIEW_SIZE, RESOLUTIONS, Project, TimelineEntry
+from slideshow.core.project import (
+    DAMAGE_USABLE_MIN,
+    FPS,
+    PREVIEW_SIZE,
+    RESOLUTIONS,
+    Item,
+    Project,
+    TimelineEntry,
+)
 from slideshow.render.audio import build_music, duck_ranges
 from slideshow.render.cache import (
     cleanup_tmp,
@@ -151,6 +166,26 @@ class RenderOptions:
 
 
 @dataclass
+class SkippedFile:
+    """Beim Export übersprungene, beschädigte Datei."""
+
+    path: Path
+    reason: str
+    readable: float = 0.0  # lesbarer Anteil (Fotos)
+
+    @property
+    def usable(self) -> bool:
+        return self.readable >= DAMAGE_USABLE_MIN
+
+    def message(self) -> str:
+        text = f"{describe_file(self.path)}: {self.reason}"
+        if self.usable:
+            text += (f" (lesbar {round(self.readable * 100)} %, in den Eigenschaften "
+                     "„Trotzdem verwenden“ möglich)")
+        return text
+
+
+@dataclass
 class RenderResult:
     output: Path
     encoder: str
@@ -163,6 +198,7 @@ class RenderResult:
     warnings: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)  # Hinweise, keine Fehler
     videos_normalized: int = 0  # im Render-Lauf umgewandelte Videos
+    skipped: list[SkippedFile] = field(default_factory=list)  # beschädigt, ausgelassen
 
     @property
     def duration(self) -> float:
@@ -203,6 +239,36 @@ def check_free_space(project: Project, cache_dir: Path) -> None:
         )
 
 
+def without(project: Project, bad: list[Item]) -> Project:
+    ids = {id(it) for it in bad}
+    return replace(project, items=[it for it in project.items if id(it) not in ids])
+
+
+def skip_damaged(project: Project, skipped: list[SkippedFile]) -> Project:
+    """Als beschädigt bekannte Elemente weglassen (außer „trotzdem verwenden“)."""
+    bad = [it for it in project.items if it.path and it.skip_damaged]
+    for it in bad:
+        assert it.path is not None and it.damage is not None
+        add_skipped(skipped, SkippedFile(project.resolve(it.path), it.damage,
+                                         it.damage_readable))
+    return without(project, bad)
+
+
+def add_skipped(skipped: list[SkippedFile], new: SkippedFile) -> None:
+    if all(s.path != new.path for s in skipped):
+        skipped.append(new)
+
+
+def damaged_at_render(path: Path, reason: str) -> SkippedFile:
+    """Erst beim Export als beschädigt erkannt (z. B. ältere Projekte): lesbaren Anteil
+    bestimmen, damit die Oberfläche „trotzdem verwenden“ anbieten kann."""
+    readable = 0.0
+    if media_kind(path) == "photo":
+        with contextlib.suppress(OSError):
+            readable = check_photo(path).readable
+    return SkippedFile(path, reason, readable)
+
+
 def render_project(
     project: Project,
     opts: RenderOptions,
@@ -216,10 +282,20 @@ def render_project(
         raise RenderError("Das Projekt enthält keine Elemente.")
     for item in project.items:
         if item.path and not project.resolve(item.path).is_file():
-            raise RenderError(f"Datei nicht gefunden: {project.resolve(item.path)}")
+            raise RenderError(
+                f"Datei nicht gefunden: {describe_file(project.resolve(item.path))}")
     for t in project.music.tracks:
         if not project.resolve(t).is_file():
-            raise RenderError(f"Musikdatei nicht gefunden: {project.resolve(t)}")
+            raise RenderError(f"Musikdatei nicht gefunden: {describe_file(project.resolve(t))}")
+    skipped: list[SkippedFile] = []
+    project = skip_damaged(project, skipped)
+
+    def check_left() -> None:
+        if not project.items:
+            raise RenderError("Alle Elemente sind beschädigt, es bleibt nichts für ein Video:\n"
+                              + "\n".join(f"• {s.message()}" for s in skipped))
+
+    check_left()
 
     cache_dir = opts.cache_dir or default_cache_dir()
     check_free_space(project, cache_dir)
@@ -232,15 +308,7 @@ def render_project(
         encoder = detect_encoder(cache_dir, opts.encoder)
     cfg = RenderConfig(width, height, encoder, cache_dir, allow_original=opts.preview)
 
-    timeline = project.timeline(clip_length)
-    total = timeline[-1].start_frame + timeline[-1].frames
-    blocks = plan_blocks(timeline, opts.max_block)
-    result = RenderResult(opts.output, encoder, total, len(timeline), 0, len(blocks), 0)
-    if estimate_size(total / FPS, height) > FAT32_LIMIT:
-        result.warnings.append(
-            "Die Datei wird voraussichtlich größer als 4 GB und passt nicht auf einen "
-            "USB-Stick mit FAT32."
-        )
+    result = RenderResult(opts.output, encoder, 0, skipped=skipped)
 
     def emit(msg: str, frac: float) -> None:
         if status:
@@ -253,7 +321,7 @@ def render_project(
     # Videos ohne Umwandlung im Cache: Export wandelt sie zuerst selbst um, die Vorschau
     # nimmt das Original und vermerkt das
     missing: list[Path] = []
-    for path in dict.fromkeys(e.item.path for e in timeline if e.item.kind == "video"):
+    for path in dict.fromkeys(it.path for it in project.items if it.kind == "video"):
         assert path is not None
         src = project.resolve(path)
         if src not in missing and cached_normalized(src, cache_dir) is None:
@@ -286,25 +354,67 @@ def render_project(
                  norm_share * (k + p.fraction) / len(missing))
 
         emit(label, norm_share * k / len(missing))
-        normalize_video(src, cache_dir, encoder=encoder, progress=norm_progress, cancel=cancel)
+        try:
+            normalize_video(src, cache_dir, encoder=encoder, progress=norm_progress,
+                            cancel=cancel)
+        except FFmpegError as err:
+            # Video lässt sich nicht lesen: überspringen statt den ganzen Export abbrechen
+            log.warning("Video übersprungen: %s: %s", src, err)
+            add_skipped(skipped, SkippedFile(
+                src, "Video lässt sich nicht umwandeln (beschädigt oder unbekanntes Format)"))
+            project = without(project, [it for it in project.items
+                                        if it.path and project.resolve(it.path) == src])
+            check_left()
+            continue
         result.videos_normalized += 1
 
-    seg_paths: dict[int, Path] = {}
-    done = 0
-    for e in timeline:
-        check_cancel()
-        label = f"Element {e.index + 1} von {len(timeline)} wird vorbereitet"
-        base = done
+    # Segmente. Ist ein Bild beschädigt, fällt sein Element heraus und die Zeitleiste wird
+    # neu berechnet; schon fertige Segmente kommen dann aus dem Cache.
+    while True:
+        timeline = project.timeline(clip_length)
+        total = timeline[-1].start_frame + timeline[-1].frames
+        seg_paths: dict[int, Path] = {}
+        segments_cached = 0
+        done = 0
+        bad: Item | None = None
+        for e in timeline:
+            check_cancel()
+            label = f"Element {e.index + 1} von {len(timeline)} wird vorbereitet"
+            base = done
 
-        def seg_progress(sec: float, base: int = base, n: int = e.frames,
-                         label: str = label) -> None:
-            report(label, 0.45 * (base + min(sec * FPS, n)) / total)
+            def seg_progress(sec: float, base: int = base, n: int = e.frames,
+                             label: str = label, total: int = total) -> None:
+                report(label, 0.45 * (base + min(sec * FPS, n)) / total)
 
-        report(label, 0.45 * base / total)
-        path, cached = render_segment(project, e, cfg, progress=seg_progress, cancel=cancel)
-        seg_paths[e.index] = path
-        result.segments_cached += cached
-        done += e.frames
+            report(label, 0.45 * base / total)
+            try:
+                path, cached = render_segment(project, e, cfg, progress=seg_progress,
+                                              cancel=cancel)
+            except DamagedFile as err:
+                log.warning("Element übersprungen: %s", err)
+                add_skipped(skipped, damaged_at_render(err.path, err.reason))
+                bad = e.item
+                break
+            except (FFmpegError, OSError, ValueError) as err:
+                where = f" {describe_file(project.resolve(e.item.path))}" if e.item.path else ""
+                raise RenderError(f"Fehler bei Element {e.index + 1}{where}: {err}") from err
+            seg_paths[e.index] = path
+            segments_cached += cached
+            done += e.frames
+        if bad is None:
+            break
+        project = without(project, [bad])
+        check_left()
+
+    blocks = plan_blocks(timeline, opts.max_block)
+    result.frames = total
+    result.segments_total, result.segments_cached = len(timeline), segments_cached
+    result.blocks_total = len(blocks)
+    if estimate_size(total / FPS, height) > FAT32_LIMIT:
+        result.warnings.append(
+            "Die Datei wird voraussichtlich größer als 4 GB und passt nicht auf einen "
+            "USB-Stick mit FAT32."
+        )
 
     final_args = encoder_args(encoder, height)
     block_files: list[Path] = []

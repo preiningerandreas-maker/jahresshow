@@ -49,7 +49,7 @@ def media_items(media: Iterable[MediaFile]) -> list[Item]:
     """Zeitleisten-Elemente aus importierten Dateien (Reihenfolge bleibt erhalten)."""
     return [
         Item(m.kind, path=str(m.path.resolve()), taken=m.taken.isoformat(timespec="seconds"),
-             chapter=chapter_key(m.taken))
+             chapter=chapter_key(m.taken), damage=m.damage, damage_readable=m.damage_readable)
         for m in media
     ]
 

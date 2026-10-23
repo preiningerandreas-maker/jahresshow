@@ -78,6 +78,8 @@ def cmd_render(ns: argparse.Namespace) -> int:
 
     for w in result.warnings:
         print(f"WARNUNG: {w}")
+    for sk in result.skipped:
+        print(f"ÜBERSPRUNGEN (beschädigt): {sk.message()}")
     for n in result.notes:
         print(f"HINWEIS: {n}")
     print(f"Kodierer: {result.encoder} ({LABELS.get(result.encoder, '')})")

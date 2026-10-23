@@ -57,6 +57,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from slideshow.app.icons import icon
 from slideshow.app.theme import RADIUS, color
 from slideshow.core.chapters import is_chapter_title
 from slideshow.core.edit import move_items
@@ -74,6 +75,7 @@ MAX_QUEUE = 300
 SCROLL_PAUSE = 0.15  # Sekunden ohne Nachladen nach jeder Scrollbewegung
 
 KIND_LABELS = {"photo": "Foto", "video": "Video", "title": "Titel"}
+DAMAGED_TEXT = "beschädigt"
 # Bildinhalt wie im Export (keine Theme-Farben): schwarze Ränder, Abdunkeln bei blur,
 # weißer Titeltext auf der Titelfarbe des Nutzers
 BLACK = QColor("#000000")
@@ -105,6 +107,7 @@ class Tile:
     kind: str
     chapter: bool
     duplicate: bool
+    damaged: bool  # Bilddaten beschädigt
     background: str
     thumb_key: str | None  # Pfad des Vorschaubilds, None bei Titeln ohne Foto
     fit: str  # Formatmodus blur | black | crop
@@ -265,7 +268,8 @@ class TimelineModel(QAbstractListModel):
             src = self.thumb_source(item)
             key = str(src) if src is not None and media_kind(src) is not None else None
             t = Tile(item_label(item), self.subtitle(item), item.kind, is_chapter_title(item),
-                     src is not None and src in self.duplicates, item.background, key, item.fit)
+                     src is not None and src in self.duplicates, item.damage is not None,
+                     item.background, key, item.fit)
             self._tiles[row] = t
         return t
 
@@ -333,6 +337,11 @@ class TimelineModel(QAbstractListModel):
         src = self.thumb_source(item)
         if src is not None and src in self.duplicates:
             lines.append("Doppelt vorhanden (gleicher Inhalt wie eine andere Datei)")
+        if item.damage is not None:
+            lines.append(f"Beschädigt: {item.damage}, lesbar "
+                         f"{round(item.damage_readable * 100)} %")
+            lines.append("Wird trotzdem verwendet (lesbarer Teil)" if not item.skip_damaged
+                         else "Wird beim Export übersprungen")
         return "\n".join(lines)
 
 
@@ -532,6 +541,17 @@ class TileDelegate(QStyledItemDelegate):
             cx, cy = badge.center().x(), badge.center().y()
             painter.drawPolygon(QPolygonF([QPointF(cx - 4, cy - 5), QPointF(cx - 4, cy + 5),
                                            QPointF(cx + 5, cy)]))
+        if tile.damaged:
+            # Warnsymbol und Text oben links (Farbe neutral, wie die übrigen Hinweise)
+            fm = option.fontMetrics  # type: ignore[attr-defined]
+            painter.setPen(color("text"))
+            painter.setBrush(color("bg"))
+            badge = QRect(thumb.x() + 4, thumb.y() + 4,
+                          fm.horizontalAdvance(DAMAGED_TEXT) + 26, 18)
+            painter.drawRoundedRect(badge, 3, 3)
+            painter.drawPixmap(badge.x() + 4, badge.y() + 2, icon("warning").pixmap(14, 14))
+            painter.drawText(badge.adjusted(20, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter,
+                             DAMAGED_TEXT)
         if tile.duplicate:
             painter.setPen(color("text"))
             painter.setBrush(color("bg"))

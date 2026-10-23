@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from slideshow.app.tasks import Task
 from slideshow.app.theme import color
+from slideshow.core.importer import DamagedFile, describe_file
 from slideshow.core.normalize import cached_normalized
 from slideshow.core.project import Item, Project
 from slideshow.render.segment import render_still, still_key
@@ -153,8 +154,14 @@ class StillPreview(QWidget):
         self.pixmap = None
         self.busy = False
         self.message = "Vorschau nicht möglich"
-        if isinstance(e, FileNotFoundError):
-            self.message += ": Datei fehlt"
+        if isinstance(e, DamagedFile):
+            self.message += f":\n{e}"
+        else:
+            if isinstance(e, FileNotFoundError):
+                self.message += ": Datei fehlt"
+            item, project = self._item, self._project
+            if item is not None and item.path and project is not None:
+                self.message += f"\n{describe_file(project.resolve(item.path))}"
         self.note = ""
         self.update()
 

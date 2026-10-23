@@ -21,6 +21,8 @@ TRANSITIONS = ("fade", "fadeblack", "wipeleft", "slideleft", "none")
 POSITIONS = ("top", "center", "bottom")
 RESOLUTIONS = {"1080p": (1920, 1080), "2160p": (3840, 2160)}
 PREVIEW_SIZE = (854, 480)
+# Beschädigte Bilder: „trotzdem verwenden“ nur, wenn mindestens dieser Anteil lesbar ist
+DAMAGE_USABLE_MIN = 0.8
 
 
 def to_frames(seconds: float) -> int:
@@ -63,6 +65,18 @@ class Item:
     volume: float = 1.0
     chapter: str | None = None  # Kapitel "JJJJ-MM"; Titel mit Kapitel = Zwischentitel
     taken: str | None = None  # Aufnahmedatum ISO 8601, für die Kapitel
+    damage: str | None = None  # Bilddaten beschädigt (Grund); None = in Ordnung
+    damage_readable: float = 1.0  # lesbarer Anteil eines beschädigten Bildes
+    use_damaged: bool = False  # beschädigtes Bild trotzdem verwenden (lesbarer Teil)
+
+    @property
+    def damage_usable(self) -> bool:
+        return self.damage is not None and self.damage_readable >= DAMAGE_USABLE_MIN
+
+    @property
+    def skip_damaged(self) -> bool:
+        """Beim Export überspringen: beschädigt und nicht „trotzdem verwenden“."""
+        return self.damage is not None and not (self.use_damaged and self.damage_usable)
 
     def validate(self) -> None:
         if self.kind not in KINDS:

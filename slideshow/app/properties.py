@@ -6,7 +6,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from slideshow.core.chapters import chapter_title, is_chapter_title
-from slideshow.core.importer import PHOTO_EXTS
+from slideshow.core.importer import PHOTO_EXTS, describe_file
 from slideshow.core.project import Item, Project, TextOverlay
 
 FIT_LABELS = {
@@ -137,6 +137,20 @@ class ItemPanel(QWidget):
         self.hint.setWordWrap(True)
         outer.addWidget(self.hint)
 
+        # --- Beschädigte Datei ---
+        self.damage_box = QGroupBox("Datei beschädigt")
+        dlay = QVBoxLayout(self.damage_box)
+        dlay.setContentsMargins(0, 4, 0, 0)
+        self.damage_label = QLabel("")
+        self.damage_label.setWordWrap(True)
+        self.damage_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        dlay.addWidget(self.damage_label)
+        self.use_damaged = QCheckBox("Trotzdem verwenden")
+        self.use_damaged.setToolTip("Den lesbaren Teil des Bildes verwenden. Fehlende Bildteile "
+                                    "erscheinen als einfarbige Fläche.")
+        dlay.addWidget(self.use_damaged)
+        outer.addWidget(self.damage_box)
+
         # --- Anzeige ---
         self.show_box = QGroupBox("Anzeige")
         form = form_layout(self.show_box)
@@ -241,6 +255,7 @@ class ItemPanel(QWidget):
             lambda v: self._apply(lambda it: setattr(it, "start", v), kinds=("video",)))
         self.audio.toggled.connect(
             lambda v: self._apply(lambda it: setattr(it, "audio", v), kinds=("video",)))
+        self.use_damaged.toggled.connect(self._on_use_damaged)
         self.fit.currentIndexChanged.connect(
             lambda _i: self._apply(lambda it: setattr(it, "fit", self.fit.currentData()),
                                    kinds=("photo", "video")))
@@ -273,6 +288,39 @@ class ItemPanel(QWidget):
                 fn(it)
         self._refresh_header()
         self.changed.emit()
+
+    def _on_use_damaged(self, on: bool) -> None:
+        def apply(it: Item) -> None:
+            if it.damage_usable:
+                it.use_damaged = on
+
+        self._apply(apply)
+        self._load_damage()
+
+    def _load_damage(self) -> None:
+        """Hinweis mit Dateiname, Pfad und Grund; „trotzdem verwenden“, wo es möglich ist."""
+        damaged = [it for it in self.items if it.damage is not None]
+        self.damage_box.setVisible(bool(damaged))
+        if not damaged:
+            return
+        lines = []
+        for it in damaged[:5]:
+            assert self.project is not None and it.path is not None
+            line = (f"{describe_file(self.project.resolve(it.path))}: {it.damage}, lesbar "
+                    f"{round(it.damage_readable * 100)} %.")
+            if it.skip_damaged:
+                line += " Wird beim Export übersprungen."
+            else:
+                line += " Wird mit dem lesbaren Teil verwendet."
+            lines.append(line)
+        if len(damaged) > 5:
+            lines.append(f"… und {len(damaged) - 5} weitere")
+        usable = [it for it in damaged if it.damage_usable]
+        if not usable:
+            lines.append("Der lesbare Teil reicht nicht, um die Datei zu verwenden.")
+        self.damage_label.setText("\n".join(lines))
+        self.use_damaged.setVisible(bool(usable))
+        self.use_damaged.setChecked(bool(usable) and all(it.use_damaged for it in usable))
 
     def _overlay(self, it: Item) -> TextOverlay:
         if it.text is None:
@@ -343,6 +391,7 @@ class ItemPanel(QWidget):
             items = self.items
             self._refresh_header()
             self.hint.setVisible(not items)
+            self._load_damage()
             kinds = {it.kind for it in items}
             for box in (self.show_box, self.text_box):
                 box.setVisible(bool(items))

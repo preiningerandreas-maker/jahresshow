@@ -13,6 +13,7 @@ from typing import Any
 from PySide6.QtCore import QObject, Signal
 
 from slideshow.core.ffmpeg import Cancelled
+from slideshow.core.importer import describe_file
 from slideshow.core.normalize import BackgroundNormalizer, NormalizeProgress, cached_normalized
 
 log = logging.getLogger(__name__)
@@ -190,7 +191,7 @@ class VideoPrep(QObject):
     def _on_error(self, src: Path, e: Exception) -> None:
         with self._lock:
             self._known.discard(src)  # später erneut versuchen (z. B. beim Export)
-        self.error.emit(src, f"„{src.name}“ konnte nicht umgewandelt werden: {e}")
+        self.error.emit(src, f"{describe_file(src)} konnte nicht umgewandelt werden: {e}")
         self._finish(src)
 
     def shutdown(self) -> None:

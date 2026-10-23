@@ -89,7 +89,8 @@ def fit_filter(fit: str, w: int, h: int, src: str, out: str) -> str:
 def _item_settings(item: Item) -> dict:
     d = asdict(item)
     # Übergänge, Dauer (steckt in frames) und Kapitel gehören nicht in den Schlüssel
-    for k in ("transition", "transition_duration", "duration", "chapter", "taken", "path"):
+    for k in ("transition", "transition_duration", "duration", "chapter", "taken", "path",
+              "damage", "damage_readable"):
         d.pop(k, None)
     return d
 
@@ -123,10 +124,12 @@ def still_key(project: Project, item: Item, w: int, h: int, cache_dir: Path) -> 
                      **_picture_key_data(project, item, cache_dir)})
 
 
-def prepare_photo(src: Path, w: int, h: int, out: Path, *, fast: bool = False) -> Path:
+def prepare_photo(src: Path, w: int, h: int, out: Path, *, fast: bool = False,
+                  tolerant: bool = False) -> Path:
     """Foto (auch HEIC) laden, EXIF-Drehung anwenden, auf nötige Größe verkleinern, als PNG.
-    fast: JPEG gleich verkleinert dekodieren (Vorschau; deutlich schneller bei 12 MP)."""
-    img = open_photo(src, draft=(w, h) if fast else None)
+    fast: JPEG gleich verkleinert dekodieren (Vorschau; deutlich schneller bei 12 MP).
+    tolerant: beschädigtes Bild mit seinem lesbaren Teil verwenden."""
+    img = open_photo(src, draft=(w, h) if fast else None, tolerant=tolerant)
     factor = max(w / img.width, h / img.height)  # Größe, die den Rahmen füllend abdeckt
     if factor < 1:
         size = (max(2, round(img.width * factor)), max(2, round(img.height * factor)))
@@ -182,7 +185,8 @@ def build_picture(project: Project, item: Item, w: int, h: int, cache_dir: Path,
             fit = "black"
         else:
             assert item.path is not None
-            prepare_photo(project.resolve(item.path), w, h, pre, fast=fast)
+            prepare_photo(project.resolve(item.path), w, h, pre, fast=fast,
+                          tolerant=item.use_damaged and item.damage_usable)
             fit = item.fit
         work.append(pre)
         args += ["-framerate", str(FPS), "-i", str(pre)]

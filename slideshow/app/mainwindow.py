@@ -56,6 +56,8 @@ from slideshow.core.importer import (
     VIDEO_EXTS,
     ImportResult,
     clip_length,
+    damage_message,
+    describe_file,
     find_existing_duplicates,
     import_media,
     media_kind,
@@ -500,7 +502,7 @@ class MainWindow(QMainWindow):
         missing += [project.resolve(t) for t in project.music.tracks
                     if not project.resolve(t).is_file()]
         if missing:
-            names = "\n".join(f"• {p}" for p in missing[:10])
+            names = "\n".join(f"• {describe_file(p)}" for p in missing[:10])
             more = f"\n… und {len(missing) - 10} weitere" if len(missing) > 10 else ""
             self.notice.show_message(
                 f"{len(missing)} Datei(en) des Projekts wurden nicht gefunden "
@@ -538,7 +540,8 @@ class MainWindow(QMainWindow):
         try:
             self.load_from(path)
         except (OSError, ValueError) as e:
-            QMessageBox.warning(self, APP_NAME, f"Das Projekt konnte nicht geöffnet werden:\n{e}")
+            QMessageBox.warning(self, APP_NAME, "Das Projekt konnte nicht geöffnet werden:\n"
+                                f"{describe_file(path)}\n{e}")
 
     def on_save(self) -> bool:
         if self.project_path is None:
@@ -559,7 +562,8 @@ class MainWindow(QMainWindow):
         try:
             self.save_to(path)
         except OSError as e:
-            QMessageBox.warning(self, APP_NAME, f"Speichern ist fehlgeschlagen:\n{e}")
+            QMessageBox.warning(self, APP_NAME, "Speichern ist fehlgeschlagen:\n"
+                                f"{describe_file(path)}\n{e}")
             return False
         self.statusBar().showMessage(f"Gespeichert: {path}", 5000)
         return True
@@ -757,8 +761,10 @@ class MainWindow(QMainWindow):
         if already:
             messages.append(f"{len(already)} Datei(en) waren schon im Projekt und wurden nicht "
                             "noch einmal hinzugefügt.")
+        damaged = [m for m in media if m.damage is not None]
+        messages += [damage_message(m) for m in damaged]
         for p, reason in res.skipped:
-            messages.append(f"„{p.name}“ wurde übersprungen: {reason}")
+            messages.append(f"{describe_file(p)} wurde übersprungen: {reason}")
         if res.live_videos:
             messages.append(f"{len(res.live_videos)} Live-Photo-Video(s) vom iPhone: "
                             "verwendet wird nur das Foto.")
@@ -783,7 +789,10 @@ class MainWindow(QMainWindow):
             text += "\n" + "\n".join(messages[:12])
             if len(messages) > 12:
                 text += f"\n… und {len(messages) - 12} weitere Hinweise"
-        kind = "warning" if res.skipped or outcome.duplicates else "success"
+        if damaged:
+            text += (f"\n{len(damaged)} beschädigte Datei(en) sind in der Zeitleiste mit "
+                     "„beschädigt“ markiert.")
+        kind = "warning" if res.skipped or outcome.duplicates or damaged else "success"
         self.notice.show_message(text, kind)
         if new_items:
             self.mark_dirty()
@@ -946,6 +955,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, APP_NAME, f"Das Video kann nicht erstellt werden:\n{e}")
             return None
         text, too_big = export_summary(seconds, self.project.settings.resolution)
+        damaged = {it.path for it in self.project.items if it.path and it.skip_damaged}
+        if damaged:
+            text += (f"\n\n{len(damaged)} beschädigte Datei(en) werden übersprungen, die "
+                     "Show wird entsprechend kürzer.")
         pending = self.video_prep.pending
         if pending:
             text += (f"\n\n{pending} Video(s) werden noch vorbereitet. Das Erstellen wartet "
@@ -983,8 +996,33 @@ class MainWindow(QMainWindow):
     def _render_failed(self, e: object) -> None:
         self.notice.show_message(f"Das Video konnte nicht erstellt werden:\n{e}", "error")
 
+    def _skipped_summary(self, result: RenderResult) -> str:
+        if not result.skipped:
+            return ""
+        lines = [f"• {s.message()}" for s in result.skipped[:10]]
+        if len(result.skipped) > 10:
+            lines.append(f"… und {len(result.skipped) - 10} weitere")
+        return (f"\n\nÜbersprungen, weil beschädigt ({len(result.skipped)}):\n"
+                + "\n".join(lines))
+
+    def _mark_skipped(self, result: RenderResult) -> None:
+        """Erst beim Export gefundene Schäden auch in der Zeitleiste markieren."""
+        found = {s.path.resolve(): s for s in result.skipped}
+        changed = False
+        for it in self.project.items:
+            if it.path and it.damage is None:
+                s = found.get(self.project.resolve(it.path).resolve())
+                if s is not None:
+                    it.damage, it.damage_readable = s.reason, s.readable
+                    changed = True
+        if changed:
+            self.model.refresh_rows(None)
+            self._on_selection()
+            self.mark_dirty()
+
     def _render_done(self, result: RenderResult, opts: RenderOptions) -> None:
         self.last_result = result
+        self._mark_skipped(result)
         if opts.preview:
             if result.notes:
                 n = len(result.notes)
@@ -992,7 +1030,11 @@ class MainWindow(QMainWindow):
                     f"Hinweis zur Vorschau: {n} Video(s) sind noch nicht für die Show "
                     "umgewandelt, die Vorschau zeigt deshalb die Originale. Farben, Helligkeit "
                     "und Bildrate können im fertigen Video anders aussehen.\n"
-                    + "\n".join(f"• {note}" for note in result.notes[:5]), "warning")
+                    + "\n".join(f"• {note}" for note in result.notes[:5])
+                    + self._skipped_summary(result), "warning")
+            elif result.skipped:
+                self.notice.show_message(
+                    "Vorschau erstellt." + self._skipped_summary(result), "warning")
             self.open_file(result.output)
             return
         size = result.output.stat().st_size if result.output.is_file() else 0
@@ -1000,9 +1042,10 @@ class MainWindow(QMainWindow):
                 f"Dauer {format_minutes(result.duration)}, Größe {format_size(size)}.")
         for w in result.warnings:
             text += f"\nAchtung: {w}"
+        text += self._skipped_summary(result)
         folder = result.output.parent
         self.notice.show_message(
-            text, "warning" if result.warnings else "success",
+            text, "warning" if result.warnings or result.skipped else "success",
             ("Ordner öffnen", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))))
         QApplication.alert(self)
 

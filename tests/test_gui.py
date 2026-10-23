@@ -796,3 +796,135 @@ def test_status_texts_without_dashes(qtbot, window: MainWindow, synthetic: Path,
         # Musiktitel dürfen Gedankenstriche enthalten, die Meldung selbst nicht
         t = t.replace("Musik 1 – Frühling", "")
         assert "–" not in t and "—" not in t, t
+
+
+# --- Beschädigte Dateien -------------------------------------------------------------
+
+
+def damaged_files(folder: Path) -> dict[str, Path]:
+    from test_damaged import garbage, make_photo, truncated
+
+    good = make_photo(folder / "20260301_100000 gut.jpg")
+    return {"good": good,
+            "cut": truncated(good, folder / "20260302_100000 abgeschnitten Ö.jpg", 0.95),
+            "garbage": garbage(folder / "20260303_100000 Datenmüll.jpg")}
+
+
+def row_of(w: MainWindow, path: Path) -> int:
+    return next(i for i, it in enumerate(w.project.items)
+                if it.path and Path(it.path) == path.resolve())
+
+
+def test_damaged_files_marked_and_named(qtbot, window: MainWindow,  # noqa: ANN001
+                                        umlaut_dir: Path) -> None:
+    files = damaged_files(umlaut_dir)
+    wait_import(qtbot, window, [umlaut_dir])
+    text = window.notice.label.text()
+    assert window.notice.kind == "warning"
+    assert "2 beschädigte Datei(en) sind in der Zeitleiste mit „beschädigt“ markiert" in text
+    for key in ("cut", "garbage"):
+        p = files[key]
+        assert f"„{p.name}“ ({p})" in text  # Hinweis nennt Name und Pfad
+    model = window.model
+    flags = {key: model.tile(row_of(window, p)).damaged for key, p in files.items()}
+    assert flags == {"good": False, "cut": True, "garbage": True}
+    cut_row = row_of(window, files["cut"])
+    tip = model.data(model.index(cut_row), Qt.ItemDataRole.ToolTipRole)
+    assert "Beschädigt: Datei ist abgeschnitten" in tip and "übersprungen" in tip
+
+    # Eigenschaften: Grund mit Pfad und „Trotzdem verwenden“
+    panel = window.item_panel
+    window.timeline.select_rows([cut_row])
+    assert panel.damage_box.isVisibleTo(window)
+    assert f"„{files['cut'].name}“ ({files['cut'].resolve()})" in panel.damage_label.text()
+    assert panel.use_damaged.isVisibleTo(window) and not panel.use_damaged.isChecked()
+    panel.use_damaged.setChecked(True)
+    item = window.project.items[cut_row]
+    assert item.use_damaged and not item.skip_damaged
+    assert "trotzdem verwendet" in model.data(model.index(cut_row),
+                                              Qt.ItemDataRole.ToolTipRole)
+    assert window.model.tile(cut_row).damaged  # Markierung bleibt
+
+    window.timeline.select_rows([row_of(window, files["garbage"])])
+    assert panel.damage_box.isVisibleTo(window)
+    assert not panel.use_damaged.isVisibleTo(window)  # nichts Lesbares: keine Option
+    window.timeline.select_rows([row_of(window, files["good"])])
+    assert not panel.damage_box.isVisibleTo(window)
+
+
+def test_damaged_tile_shows_warning_badge(qtbot) -> None:  # noqa: ANN001
+    from PySide6.QtCore import QRect
+    from PySide6.QtWidgets import QStyleOptionViewItem
+
+    from slideshow.app.timeline import TileDelegate, TimelineModel, TimelineView
+
+    p = Project(items=[Item("photo", path="kaputt.jpg", damage="Bilddaten sind fehlerhaft"),
+                       Item("photo", path="gut.jpg")])
+    model = TimelineModel(p, None)
+    view = TimelineView()
+    qtbot.addWidget(view)
+    view.setModel(model)
+    delegate = view.itemDelegate()
+    assert isinstance(delegate, TileDelegate)
+
+    def paint(row: int) -> QImage:
+        idx = model.index(row)
+        size = delegate.sizeHint(QStyleOptionViewItem(), idx)
+        img = QImage(size, QImage.Format.Format_RGB32)
+        img.fill(0)
+        opt = QStyleOptionViewItem()
+        view.initViewItemOption(opt)
+        opt.rect = QRect(0, 0, size.width(), size.height())
+        from PySide6.QtGui import QPainter
+
+        painter = QPainter(img)
+        delegate.paint(painter, opt, idx)
+        painter.end()
+        return img
+
+    damaged, good = paint(0), paint(1)
+    # Abzeichen oben links: dort unterscheiden sich die beiden Kacheln
+    diff = sum(1 for x in range(8, 100) for y in range(8, 26)
+               if damaged.pixel(x, y) != good.pixel(x, y))
+    assert diff > 100
+
+
+def test_export_skips_damaged_and_summarizes(qtbot, window: MainWindow,  # noqa: ANN001
+                                             umlaut_dir: Path, no_dialogs: list[str]) -> None:
+    files = damaged_files(umlaut_dir)
+    wait_import(qtbot, window, [umlaut_dir])
+    for it in window.project.items:
+        it.duration = 1.0
+    # Bestätigung vor dem Export nennt die Zahl der übersprungenen Dateien
+    assert window.export_to(umlaut_dir / "x.mp4") is None
+    assert any("2 beschädigte Datei(en) werden übersprungen" in t for t in no_dialogs)
+
+    out = umlaut_dir / "Show Ä.mp4"
+    assert window.export_to(out, confirm=False) is not None
+    wait_render(qtbot, window)
+    assert out.is_file()
+    result = window.last_result
+    assert result is not None and len(result.skipped) == 2
+    text = window.notice.label.text()
+    assert window.notice.kind == "warning" and "Fertig" in text
+    assert "Übersprungen, weil beschädigt (2)" in text
+    for key in ("cut", "garbage"):
+        p = files[key].resolve()
+        assert f"„{p.name}“ ({p})" in text
+
+
+def test_export_marks_damage_found_late(qtbot, window: MainWindow,  # noqa: ANN001
+                                        umlaut_dir: Path) -> None:
+    """Projekt von früher, ohne Prüfung beim Import: Der Export findet den Schaden, die
+    Zeitleiste zeigt ihn danach an und bietet „Trotzdem verwenden“ an."""
+    files = damaged_files(umlaut_dir)
+    p = Project(items=[Item("photo", path=str(files[k]), duration=1.0)
+                       for k in ("good", "cut")])
+    window.set_project(p, None)
+    assert window.export_to(umlaut_dir / "alt.mp4", confirm=False) is not None
+    wait_render(qtbot, window)
+    item = window.project.items[1]
+    assert item.damage is not None and item.damage_usable
+    assert window.model.tile(1).damaged
+    assert "„Trotzdem verwenden“ möglich" in window.notice.label.text()
+

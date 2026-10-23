@@ -227,16 +227,27 @@ def test_collect_files_recursive_unique_and_filtered(synthetic: Path, umlaut_dir
     assert found == [a, b]
 
 
-def test_broken_file_is_skipped_with_message(umlaut_dir: Path) -> None:
+def test_broken_files_are_reported_with_name_and_path(umlaut_dir: Path) -> None:
+    """Kaputtes Foto: bleibt als „beschädigt“ in der Liste (Zeitleiste markiert es, der
+    Export überspringt es). Kaputtes Video: wird wie bisher übersprungen. Jede Meldung nennt
+    Dateiname und Pfad."""
     good = make_jpeg(umlaut_dir / "gut.jpg", date="2026:05:05 05:05:05")
     bad = umlaut_dir / "kaputt Ö.jpg"
     bad.write_bytes(b"\xff\xd8\xff kein richtiges Bild")
     bad_video = umlaut_dir / "kaputt.mp4"
     bad_video.write_bytes(b"\x00" * 100)
     res = import_media([umlaut_dir])
-    assert [m.path for m in res.media] == [good]
-    assert {p for p, _ in res.skipped} == {bad, bad_video}
-    assert all("übersprungen" in msg for msg in res.messages())
+    assert {m.path for m in res.media} == {good, bad}
+    damaged = {m.path: m for m in res.damaged}
+    assert set(damaged) == {bad}
+    assert damaged[bad].damage == "kein lesbares Bild (Datenmüll oder falsches Format)"
+    assert damaged[bad].damage_readable == 0.0
+    assert [p for p, _ in res.skipped] == [bad_video]
+    messages = res.messages()
+    assert len(messages) == 2
+    assert any(f"„{bad.name}“ ({bad})" in m and "beschädigt" in m for m in messages)
+    assert any(f"„{bad_video.name}“ ({bad_video})" in m and "übersprungen" in m
+               for m in messages)
 
 
 def test_motion_photo_uses_still_image(umlaut_dir: Path, synthetic: Path) -> None:

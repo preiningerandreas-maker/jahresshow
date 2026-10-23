@@ -1,11 +1,12 @@
 """Import: Dateien sammeln, Metadaten lesen (EXIF, ffprobe), nach Aufnahmedatum sortieren,
-Duplikate melden."""
+Duplikate und beschädigte Bilder melden."""
 
 from __future__ import annotations
 
 import hashlib
 import os
 import re
+import struct
 import threading
 from collections import defaultdict
 from collections.abc import Callable, Iterable
@@ -14,9 +15,10 @@ from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from slideshow.core.ffmpeg import Cancelled, FFmpegError, probe
+from slideshow.core.project import DAMAGE_USABLE_MIN
 
 try:
     from pillow_heif import register_heif_opener
@@ -146,16 +148,135 @@ def clip_length(path: Path) -> float:
 # --- Fotos -------------------------------------------------------------------
 
 
-def open_photo(path: Path, draft: tuple[int, int] | None = None) -> Image.Image:
+def describe_file(path: Path | str) -> str:
+    """Dateiname und Pfad für Meldungen: „Bild.jpg“ (C:\\Fotos\\Bild.jpg)."""
+    p = Path(path)
+    return f"„{p.name}“ ({p})"
+
+
+class DamagedFile(Exception):
+    """Die Bilddaten einer Datei sind unvollständig oder unlesbar."""
+
+    def __init__(self, path: Path, reason: str) -> None:
+        super().__init__(f"{describe_file(path)} ist beschädigt: {reason}")
+        self.path = path
+        self.reason = reason
+
+
+def is_decode_error(e: BaseException) -> bool:
+    """Fehler beim Dekodieren (Datei beschädigt), nicht beim Zugriff (fehlt, gesperrt)."""
+    if isinstance(e, UnidentifiedImageError | SyntaxError | EOFError | struct.error):
+        return True
+    # Pillow meldet kaputte Daten als OSError ohne Fehlernummer, Zugriffsfehler haben eine
+    return isinstance(e, OSError) and e.errno is None
+
+
+def damage_reason(e: BaseException) -> str:
+    """Grund in einfacher Sprache."""
+    msg = str(e)
+    if isinstance(e, UnidentifiedImageError):
+        return "kein lesbares Bild (Datenmüll oder falsches Format)"
+    if "truncated" in msg:
+        return "Datei ist abgeschnitten, ein Teil der Bilddaten fehlt"
+    if "broken data stream" in msg or "decoder error" in msg:
+        return "Bilddaten sind fehlerhaft"
+    return f"Bilddaten lassen sich nicht lesen ({msg or type(e).__name__})"
+
+
+def _load(im: Image.Image, tolerant: bool) -> None:
+    """Bild dekodieren. tolerant: bei kaputten Daten den lesbaren Teil behalten.
+
+    Pillow kennt dafür nur den globalen Schalter ImageFile.LOAD_TRUNCATED_IMAGES, der in allen
+    Threads gelten würde. Stattdessen: Fehler abfangen und den schon gefüllten Bildspeicher
+    als geladen markieren (fehlende Teile bleiben einfarbig)."""
+    try:
+        im.load()
+    except Exception as e:
+        if not tolerant or not is_decode_error(e) or im._im is None:
+            raise
+        im.tile = []
+
+
+def open_photo(path: Path, draft: tuple[int, int] | None = None, *,
+               tolerant: bool = False) -> Image.Image:
     """Foto (auch HEIC) laden und EXIF-Drehung anwenden. Ergebnis ist RGB.
-    draft: JPEG verkleinert dekodieren, mindestens so groß, dass (b, h) bedeckt bleibt."""
-    with Image.open(path) as im:
-        if draft is not None:
-            w, h = draft
-            side = max(w, h)  # Drehung erst danach bekannt: beide Seiten abdecken
-            im.draft("RGB", (side, side))
-        img = ImageOps.exif_transpose(im)
-        return img.convert("RGB")
+    draft: JPEG verkleinert dekodieren, mindestens so groß, dass (b, h) bedeckt bleibt.
+    tolerant: beschädigtes Bild trotzdem laden, so weit es lesbar ist.
+    Kaputte Bilddaten lösen DamagedFile aus (mit Dateiname und Pfad)."""
+    try:
+        with Image.open(path) as im:
+            if draft is not None:
+                w, h = draft
+                side = max(w, h)  # Drehung erst danach bekannt: beide Seiten abdecken
+                im.draft("RGB", (side, side))
+            _load(im, tolerant)
+            img = ImageOps.exif_transpose(im)
+            return img.convert("RGB")
+    except Exception as e:
+        if is_decode_error(e):
+            raise DamagedFile(path, damage_reason(e)) from e
+        raise
+
+
+@dataclass(frozen=True)
+class PhotoCheck:
+    reason: str | None = None  # None: Bild ist in Ordnung
+    readable: float = 1.0  # lesbarer Anteil (Bildzeilen von oben), 0..1
+
+    @property
+    def ok(self) -> bool:
+        return self.reason is None
+
+    @property
+    def usable(self) -> bool:
+        """Beschädigt, aber der lesbare Teil reicht für „trotzdem verwenden“."""
+        return not self.ok and self.readable >= DAMAGE_USABLE_MIN
+
+
+def readable_fraction(img: Image.Image) -> float:
+    """Anteil des Bildes, der Bildinhalt hat. Fehlen am Ende Daten, bleiben die untersten
+    Zeilen einfarbig; gezählt wird von unten, bis eine Zeile nicht mehr einfarbig ist."""
+    if img.height == 0:
+        return 0.0
+    img = img.convert("RGB")
+    factor = max(1, img.height // 512)
+    small = img.reduce(factor) if factor > 1 else img
+    w, h = small.size
+    missing = 0
+    for y in range(h - 1, -1, -1):
+        bands = small.crop((0, y, w, y + 1)).getextrema()
+        if any(lo != hi for lo, hi in bands):  # type: ignore[misc]
+            break
+        missing += 1
+    return 1 - missing / h
+
+
+def check_photo(path: Path) -> PhotoCheck:
+    """Bild komplett dekodieren, um Schäden schon beim Import zu finden.
+
+    JPEG wird dabei verkleinert berechnet (1/8): Der ganze Datenstrom wird gelesen und
+    entschlüsselt, also auch jeder Fehler gefunden, nur die Pixel entstehen kleiner. Auf dem
+    T450s dauert das 0,04 s statt 0,14 s pro 8-MP-Foto."""
+
+    def decode(tolerant: bool) -> Image.Image:
+        with Image.open(path) as im:
+            im.draft("RGB", (max(1, im.width // 8), max(1, im.height // 8)))
+            _load(im, tolerant)
+            return im.convert("RGB")
+
+    try:
+        decode(False)
+        return PhotoCheck()
+    except Exception as e:
+        if not is_decode_error(e):
+            raise
+        reason = damage_reason(e)
+    try:
+        return PhotoCheck(reason, readable_fraction(decode(True)))
+    except Exception as e:
+        if not is_decode_error(e):
+            raise
+        return PhotoCheck(reason, 0.0)
 
 
 def _parse_exif_date(value: object) -> datetime | None:
@@ -279,6 +400,8 @@ class MediaFile:
     duplicate_of: Path | None = None
     content_ids: frozenset[str] = frozenset()
     content_id: str | None = None
+    damage: str | None = None  # Grund, wenn die Bilddaten beschädigt sind
+    damage_readable: float = 1.0  # lesbarer Anteil eines beschädigten Bildes
 
     @property
     def portrait(self) -> bool:
@@ -292,12 +415,25 @@ class ImportResult:
     skipped: list[tuple[Path, str]]  # (Datei, Grund)
     live_videos: list[tuple[Path, Path]] = field(default_factory=list)  # (MOV, Foto)
 
+    @property
+    def damaged(self) -> list[MediaFile]:
+        return [m for m in self.media if m.damage is not None]
+
     def messages(self) -> list[str]:
         """Meldungen in einfacher Sprache für die Oberfläche."""
-        out = [f"„{d.name}“ ist identisch mit „{o.name}“ (doppelt vorhanden)."
+        out = [f"{describe_file(d)} ist identisch mit {describe_file(o)} (doppelt vorhanden)."
                for d, o in self.duplicates]
-        out += [f"„{p.name}“ wurde übersprungen: {reason}" for p, reason in self.skipped]
+        out += [damage_message(m) for m in self.damaged]
+        out += [f"{describe_file(p)} wurde übersprungen: {reason}" for p, reason in self.skipped]
         return out
+
+
+def damage_message(m: MediaFile) -> str:
+    text = (f"{describe_file(m.path)} ist beschädigt: {m.damage}, lesbar "
+            f"{round(m.damage_readable * 100)} %. Wird beim Export übersprungen")
+    if m.damage_readable >= DAMAGE_USABLE_MIN:
+        text += ", außer Sie wählen in den Eigenschaften „Trotzdem verwenden“"
+    return text + "."
 
 
 def media_kind(path: Path) -> str | None:
@@ -339,12 +475,22 @@ def read_media(path: Path) -> MediaFile:
         raise ValueError("Dateityp wird nicht unterstützt")
     size = path.stat().st_size
     if kind == "photo":
-        info = photo_info(path)
+        try:
+            info = photo_info(path)
+        except Exception as e:
+            if not is_decode_error(e):
+                raise
+            # Nicht einmal die Größe ist lesbar: trotzdem in die Zeitleiste, als beschädigt
+            info = PhotoInfo(0, 0, 1, None)
+            check = PhotoCheck(damage_reason(e), 0.0)
+        else:
+            check = check_photo(path)
         taken, source = info.taken, "exif"
         mf = MediaFile(path, kind, datetime.min, "", info.width, info.height, size,
                        orientation=info.orientation, content_ids=info.content_ids,
-                       motion_photo=path.suffix.lower() in (".jpg", ".jpeg")
-                       and is_motion_photo(path))
+                       motion_photo=check.ok and path.suffix.lower() in (".jpg", ".jpeg")
+                       and is_motion_photo(path),
+                       damage=check.reason, damage_readable=check.readable)
     else:
         vi = video_info(path)
         taken, source = parse_creation_time(vi.creation_time), "video"
