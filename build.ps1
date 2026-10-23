@@ -32,6 +32,9 @@ foreach ($dir in $Dist, $Work) {
     if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
 }
 $env:PYTHONHASHSEED = '0'
+# Zeitstempel im Paket = Zeitpunkt des letzten Commits statt Bauzeit
+$commitTime = git log -1 --format=%ct 2>$null
+if ($LASTEXITCODE -eq 0 -and $commitTime) { $env:SOURCE_DATE_EPOCH = $commitTime }
 
 Write-Host "PyInstaller $piVersion, Python $pyVersion"
 & $Python -m PyInstaller --noconfirm --clean --log-level WARN `
