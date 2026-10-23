@@ -3,6 +3,7 @@
 python -m slideshow                      Oberfläche starten
 python -m slideshow gui [dateien ...]    Oberfläche mit Projekt oder Fotos/Videos starten
 python -m slideshow render <projekt.json> [-o out.mp4] [--encoder X] [--preview]
+Jahresshow.exe --render <projekt.json> [-o out.mp4]   dasselbe im fertigen Paket
 """
 
 from __future__ import annotations
@@ -132,10 +133,42 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+COMMANDS = ("gui", "render", "encoders")
+
+
+def _attach_console() -> None:
+    """Das gepackte Programm ist ein Fensterprogramm: Ohne Umleitung gibt es keine Ausgabe.
+    Für die Kommandozeile in die Konsole schreiben, aus der es gestartet wurde."""
+    if sys.platform != "win32" or (sys.stdout is not None and sys.stderr is not None):
+        return
+    import ctypes
+
+    if not ctypes.windll.kernel32.AttachConsole(-1):  # ATTACH_PARENT_PROCESS
+        return
+    if sys.stdout is None:
+        sys.stdout = open("CONOUT$", "w", encoding="utf-8", errors="replace")  # noqa: SIM115
+    if sys.stderr is None:
+        sys.stderr = sys.stdout
+
+
+def normalize_args(args: list[str]) -> list[str]:
+    """Aufrufe des fertigen Pakets auf die Befehle abbilden."""
+    if not args:
+        return ["gui"]
+    if args[0] == "--render":  # Kurzform: Jahresshow.exe --render projekt.json
+        return ["render", *args[1:]]
+    if args[0] not in COMMANDS and not args[0].startswith("-"):
+        # Dateien ohne Befehl, z. B. ein Projekt im Explorer auf die exe gezogen
+        return ["gui", *args]
+    return list(args)
+
+
 def main(argv: list[str] | None = None) -> int:
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    args = sys.argv[1:] if argv is None else argv
-    ns = build_parser().parse_args(args or ["gui"])
+    args = normalize_args(sys.argv[1:] if argv is None else list(argv))
+    if args[0] != "gui":
+        _attach_console()
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+    ns = build_parser().parse_args(args)
     return int(ns.func(ns))
