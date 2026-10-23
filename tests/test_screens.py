@@ -60,6 +60,11 @@ def test_window_fits_without_clipped_controls(width: int, height: int, scale: fl
     assert report["dpr"] == pytest.approx(scale)
     assert report["min_size"][0] <= width and report["min_size"][1] <= height - TASKBAR_AND_TITLE
     assert report["problems"] == [], "\n".join(report["problems"])
+    # „Video erstellen“ in jedem Zustand sichtbar, nicht im Überlaufmenü
+    assert len(report["export_button"]) == 8
+    for name, state in report["export_button"].items():
+        assert state == {"visible": True, "in_window": True, "in_toolbar": True,
+                         "in_overflow": False}, name
     # Element (Foto, Video mit allen Aufgaben, aufgeklappt, Titel), Show, Musik, Zoom klein/groß
     assert len(report["files"]) == 8
     for f in report["files"]:

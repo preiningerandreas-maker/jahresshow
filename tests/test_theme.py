@@ -3,7 +3,11 @@ Symbole, Aufbau mit Raster | Monitor | Eigenschaften."""
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -13,10 +17,12 @@ from PySide6.QtWidgets import QApplication, QLineEdit, QPlainTextEdit, QStyle, Q
 
 from slideshow.app import theme
 from slideshow.app.icons import ICON_DIR, icon
+from slideshow.app.layoutcheck import toolbar_button_state
 from slideshow.app.mainwindow import MainWindow
 from slideshow.app.theme import TEXT_ON, TOKENS, contrast, stylesheet
 
 T = TOKENS
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_tokens_as_specified() -> None:
@@ -150,8 +156,8 @@ def test_toolbar_icons_short_texts_and_single_primary_button(themed_window: Main
     primaries = [b for b in tb.findChildren(type(w.export_button))
                  if b.objectName() == "primaryButton"]
     assert primaries == [w.export_button]
-    # ganz rechts: letztes Element, davor ein dehnbarer Abstandhalter (ob alles sichtbar
-    # passt, prüfen die Screenshot-Tests mit echter Schrift)
+    # ganz rechts: letztes Element, davor ein dehnbarer Abstandhalter (Sichtbarkeit prüft
+    # test_export_button_visible_on_small_screens mit echter Schrift)
     widgets = [tb.widgetForAction(a) for a in tb.actions()]
     assert widgets[-1] is w.export_button
     assert widgets[-2].sizePolicy().horizontalPolicy().name == "Expanding"
@@ -159,6 +165,48 @@ def test_toolbar_icons_short_texts_and_single_primary_button(themed_window: Main
     w.act_export.setEnabled(False)
     assert not w.export_button.isEnabled()
     w.act_export.setEnabled(True)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-Darstellung nötig")
+@pytest.mark.parametrize(("width", "height", "scale"), [(1366, 768, 1.0), (1280, 720, 1.5)],
+                         ids=["1366x768", "1920x1080-150pct"])
+def test_export_button_visible_on_small_screens(width: int, height: int, scale: float,
+                                                tmp_path: Path) -> None:
+    """„Video erstellen“ ist sichtbar, liegt im Fenster und steckt nicht im Überlaufmenü.
+    Eigener Prozess mit echter Windows-Schrift und Skalierung (offscreen sind die
+    Ersatzschriften breiter als unter Windows)."""
+    from slideshow.app.screenshot import TASKBAR_AND_TITLE
+
+    env = {k: v for k, v in os.environ.items() if k != "QT_QPA_PLATFORM"}
+    env["PYTHONIOENCODING"] = "utf-8"
+    res = subprocess.run(
+        [sys.executable, "-m", "slideshow.app.screenshot", "--width", str(width),
+         "--height", str(height), "--scale", str(scale), "--out", str(tmp_path),
+         "--cache-dir", str(tmp_path / "cache"), "--toolbar-only"],
+        cwd=ROOT, env=env, capture_output=True, encoding="utf-8", timeout=120, check=False)
+    assert res.returncode == 0, res.stderr[-3000:]
+    report = json.loads(res.stdout.strip().splitlines()[-1])
+    assert report["window"] == [width, height - TASKBAR_AND_TITLE]
+    assert report["dpr"] == pytest.approx(scale)
+    assert report["export_button"] == {"visible": True, "in_window": True, "in_toolbar": True,
+                                       "in_overflow": False}
+
+
+def test_export_button_check_detects_overflow(qtbot, tmp_path: Path) -> None:  # noqa: ANN001
+    """Gegenprobe: in einem zu schmalen Fenster landet der Knopf im Überlaufmenü, und die
+    Prüfung meldet das."""
+    w = MainWindow(cache_dir=tmp_path / "cache", encoder="libx264")
+    qtbot.addWidget(w)
+    try:
+        w.setMinimumSize(1, 1)
+        w.resize(500, 400)
+        w.show()
+        qtbot.wait(50)
+        state = toolbar_button_state(w, w.export_button)
+        assert state == {"visible": False, "in_window": False, "in_toolbar": False,
+                         "in_overflow": True}
+    finally:
+        w.shutdown()
 
 
 def test_primary_button_dark_text_on_accent(themed_window: MainWindow) -> None:

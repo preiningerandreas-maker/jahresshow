@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QSlider,
     QTabBar,
     QToolBar,
+    QToolButton,
     QWidget,
 )
 
@@ -135,6 +136,21 @@ def _toolbar_problems(window: QWidget) -> list[str]:
             elif not tb.rect().contains(_rect_in(btn, tb)):
                 out.append(f"Werkzeugleiste: „{act.text()}“ ist abgeschnitten")
     return out
+
+
+def toolbar_button_state(window: QWidget, button: QWidget) -> dict[str, bool]:
+    """Liegt ein Knopf der Werkzeugleiste sichtbar im Fenster oder steckt er im Überlaufmenü
+    (Pfeil am Ende der Leiste, dort landen Knöpfe, die nicht mehr in die Zeile passen)?"""
+    tb = button.parentWidget()
+    assert isinstance(tb, QToolBar), "Knopf liegt nicht direkt in einer Werkzeugleiste"
+    ext = tb.findChild(QToolButton, "qt_toolbar_ext_button")
+    # Qt blendet Knöpfe, die nicht in die Zeile passen, aus und zeigt sie erst nach einem
+    # Klick auf den Pfeil
+    visible = button.isVisible()
+    return {"visible": visible,
+            "in_window": visible and window.rect().contains(_rect_in(button, window)),
+            "in_toolbar": visible and tb.rect().contains(_rect_in(button, tb)),
+            "in_overflow": not visible and ext is not None and ext.isVisibleTo(window)}
 
 
 def _menubar_problems(window: QWidget) -> list[str]:

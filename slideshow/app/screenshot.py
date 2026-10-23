@@ -42,6 +42,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--project")
     ap.add_argument("--cache-dir")
+    ap.add_argument("--toolbar-only", action="store_true",
+                    help="nur den Knopf „Video erstellen“ prüfen, keine Bilder speichern")
     ns = ap.parse_args(argv)
 
     native = native_scale()
@@ -51,7 +53,7 @@ def main(argv: list[str] | None = None) -> int:
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
 
-    from slideshow.app.layoutcheck import clipped_widgets
+    from slideshow.app.layoutcheck import clipped_widgets, toolbar_button_state
     from slideshow.app.main import _translate
     from slideshow.app.mainwindow import MainWindow
     from slideshow.app.timeline import ZOOM_MAX, ZOOM_MIN
@@ -79,6 +81,13 @@ def main(argv: list[str] | None = None) -> int:
     while (not win.thumbs.idle() or win.duration_pending) and time.monotonic() < end:
         settle(0.05)
     settle()
+
+    if ns.toolbar_only:
+        print(json.dumps({"window": [win.width(), win.height()], "dpr": win.devicePixelRatioF(),
+                          "export_button": toolbar_button_state(win, win.export_button)}))
+        win.dirty = False
+        win.shutdown()
+        return 0
 
     out = Path(ns.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -136,6 +145,8 @@ def main(argv: list[str] | None = None) -> int:
             settle(0.05)
         settle(0.2)
         problems = clipped_widgets(win)
+        report.setdefault("export_button", {})[name] = toolbar_button_state(
+            win, win.export_button)
         file = out / f"{tag}-{name}.png"
         win.grab().save(str(file))
         report["states"][name] = problems
