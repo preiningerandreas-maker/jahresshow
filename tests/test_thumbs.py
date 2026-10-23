@@ -133,3 +133,70 @@ def test_thumb_workers_exit_when_app_is_killed(tmp_path: Path) -> None:
     while any(_alive(pid) for pid in workers) and time.monotonic() < deadline:
         time.sleep(0.2)
     assert not any(_alive(pid) for pid in workers)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-Job-Objekt")
+def test_thumb_workers_are_in_kill_on_close_job(tmp_path: Path) -> None:
+    """Jeder Hilfsprozess steckt gleich nach dem Start im Job-Objekt, das Windows beim Ende
+    des Hauptprogramms schließt. Das Hauptprogramm selbst nicht: Ein von dort geöffneter
+    Videoplayer soll weiterlaufen."""
+    import ctypes
+    from ctypes import wintypes
+
+    from slideshow.core.thumbs import ThumbProcessPool, _kill_on_close_job, _warm_up
+
+    kernel32 = ctypes.WinDLL("kernel32")
+    kernel32.IsProcessInJob.argtypes = [wintypes.HANDLE, wintypes.HANDLE,
+                                        ctypes.POINTER(wintypes.BOOL)]
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+
+    def in_job(handle: int) -> bool:
+        result = wintypes.BOOL()
+        assert kernel32.IsProcessInJob(handle, _kill_on_close_job(), ctypes.byref(result))
+        return bool(result.value)
+
+    tp = ThumbProcessPool(tmp_path / "cache")
+    try:
+        pool = tp._get_pool()
+        for f in [pool.submit(_warm_up) for _ in range(2)]:
+            f.result(timeout=60)
+        handles = [p._popen._handle for p in pool._processes.values()]
+        assert len(handles) == 2 and all(in_job(h) for h in handles)
+        assert not in_job(kernel32.GetCurrentProcess())
+    finally:
+        tp.shutdown()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-Prozessabfrage")
+def test_thumb_workers_exit_when_app_is_killed_during_their_start(tmp_path: Path) -> None:
+    """Das Hauptprogramm stirbt, während die Hilfsprozesse noch starten (gleich nach dem
+    Programmstart): Auch dann dürfen sie nicht liegen bleiben. Im fertigen Paket blieben
+    sie vorher hängen; jetzt beendet Windows sie über ein Job-Objekt."""
+    code = (
+        "import json, sys, time\n"
+        "from pathlib import Path\n"
+        "from slideshow.core.thumbs import ThumbProcessPool, _warm_up\n"
+        "if __name__ == '__main__':\n"
+        "    pool = ThumbProcessPool(Path(sys.argv[1]))._get_pool()\n"
+        "    for _ in range(2):\n"
+        "        pool.submit(_warm_up)\n"
+        "    print(json.dumps(list(pool._processes)), flush=True)\n"
+        "    time.sleep(120)\n"
+    )
+    script = tmp_path / "app.py"
+    script.write_text(code, "utf-8")
+    root = Path(__file__).resolve().parents[1]
+    proc = subprocess.Popen([sys.executable, str(script), str(tmp_path / "cache")],
+                            cwd=root, stdout=subprocess.PIPE, text=True,
+                            env={**os.environ, "PYTHONPATH": str(root)})
+    try:
+        assert proc.stdout is not None
+        workers = json.loads(proc.stdout.readline())
+        assert workers and all(_alive(pid) for pid in workers)
+    finally:
+        proc.kill()  # sofort, ohne auf den Start der Hilfsprozesse zu warten
+        proc.wait(10)
+    deadline = time.monotonic() + 15
+    while any(_alive(pid) for pid in workers) and time.monotonic() < deadline:
+        time.sleep(0.2)
+    assert not any(_alive(pid) for pid in workers)
