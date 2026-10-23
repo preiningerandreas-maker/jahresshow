@@ -75,6 +75,26 @@ Zwischendateien (umgewandelte Videos, Segmente, Vorschaubilder) liegen in
 `%LOCALAPPDATA%\Jahresshow\cache` und können jederzeit gelöscht werden, dann wird neu
 berechnet.
 
+## Windows-Paket bauen
+
+```powershell
+.venv\Scripts\python.exe -m pip install -e ".[dev,build]"   # einmalig: PyInstaller
+powershell -ExecutionPolicy Bypass -File .\build.ps1
+```
+
+Ergebnis ist der Ordner `dist\Jahresshow` (PyInstaller onedir) mit `Jahresshow.exe`,
+`ffmpeg.exe`, `ffprobe.exe`, `README.txt` für Endnutzer und dem Ordner `Lizenzen`. Weitergeben
+wird der ganze Ordner, zum Beispiel als ZIP. Jeder Lauf baut von vorn; die Spezifikation steht
+in `packaging\Jahresshow.spec`, die Endnutzer-README in `packaging\README.txt`.
+
+Die gepackte exe ist ein Fensterprogramm. Auf der Kommandozeile rendert sie mit
+`Jahresshow.exe --render projekt.json -o video.mp4`. PowerShell wartet bei Fensterprogrammen
+nur, wenn die Ausgabe weitergeleitet wird, also mit `| Out-Host` am Ende.
+
+Die Tests in `tests\test_package.py` prüfen das gebaute Paket (frische PowerShell ohne
+Python, 50 Fotos, Hilfsprozesse, Render mit ffprobe-Prüfung). Ohne `dist\Jahresshow` werden
+sie übersprungen.
+
 ## Prüfen vor jedem Commit
 
 ```powershell
