@@ -1,5 +1,6 @@
-"""Laufende Aufgaben (Einlesen, Videos umwandeln, Video erstellen) in einer einzigen Zeile,
-die nur bei Aktivität erscheint. Aufgeklappt zeigt sie jede Aufgabe mit eigenem Fortschritt
+"""Laufende Hintergrundaufgaben (Einlesen, Videos umwandeln) in einer einzigen Zeile, die
+nur bei Aktivität erscheint. Export und Vorschau zeigen ihren Fortschritt in einem eigenen
+Fenster (renderdialog). Aufgeklappt zeigt sie jede Aufgabe mit eigenem Fortschritt
 und Abbrechen."""
 
 from __future__ import annotations

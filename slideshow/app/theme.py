@@ -1,6 +1,7 @@
 """Dunkles Erscheinungsbild: alle Farben als Tokens an dieser einen Stelle, daraus entstehen
 Palette und Stylesheet (QSS). Ruhig gehalten: dünne Linien statt Rahmen, keine Schatten,
 keine Verläufe, keine Animationen. Blau nur für Auswahl, aktive Reiter und den Hauptknopf.
+Gelb nur für das Fortschrittsfenster von Export und Vorschau, darauf dunkle Schrift.
 
 Lesbarkeit (WCAG AA, Text mindestens 4.5:1): Gedämpfter Text erreicht auf Hintergrund,
 Bereichen und Eingabefeldern mindestens 4.5:1, auf Blau steht weiße Schrift (5.1:1), siehe
@@ -25,6 +26,9 @@ TOKENS = {
     "muted": "#969696",  # gedämpfter Text (Hinweise, Statusleiste, Monitor-Titel)
     "accent": "#1F6FC5",  # Auswahl, aktiver Reiter, Hauptknopf
     "on_accent": "#FFFFFF",  # Schrift auf Blau
+    "popup": "#F2C230",  # Fortschrittsfenster von Export und Vorschau
+    "on_popup": "#1A1A1A",  # Schrift, Rand und Balkenfüllung auf Gelb
+    "popup_track": "#FBE7A1",  # leerer Teil des Balkens im Fortschrittsfenster
 }
 
 # Textfarbe → Hintergründe, auf denen sie vorkommt (für den Kontrast-Test)
@@ -32,6 +36,7 @@ TEXT_ON = {
     "text": ("bg", "area", "input", "line"),
     "muted": ("bg", "area", "input"),
     "on_accent": ("accent",),  # Hauptknopf, markierte Menü- und Listeneinträge
+    "on_popup": ("popup",),  # Fortschrittsfenster (Weiß auf Gelb wäre unlesbar)
 }
 
 RADIUS = 4  # Kacheln und Knöpfe leicht abgerundet
@@ -168,6 +173,13 @@ QScrollBar::add-page, QScrollBar::sub-page {{ background: none; }}
 QProgressBar {{ background: {input}; border: 1px solid {line}; border-radius: 3px;
                min-height: 8px; max-height: 8px; }}
 QProgressBar::chunk {{ background: {muted}; border-radius: 2px; }}
+
+QDialog#renderDialog {{ background: {popup}; border: 1px solid {on_popup}; }}
+QDialog#renderDialog QLabel {{ color: {on_popup}; background: transparent; }}
+QLabel#renderTitle {{ font-size: 12pt; font-weight: 600; }}
+QProgressBar#renderBar {{ background: {popup_track}; border: 1px solid {on_popup};
+                         border-radius: 3px; min-height: 14px; max-height: 14px; }}
+QProgressBar#renderBar::chunk {{ background: {on_popup}; border-radius: 2px; }}
 QSlider::groove:horizontal {{ background: {line}; height: 2px; }}
 QSlider::sub-page:horizontal {{ background: {muted}; height: 2px; }}
 QSlider::handle:horizontal {{ background: {text}; width: 10px; height: 10px;

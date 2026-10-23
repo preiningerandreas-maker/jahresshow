@@ -104,7 +104,8 @@ def main(argv: list[str] | None = None) -> int:
                 for k in ("title", "photo", "video")}
 
     def busy() -> None:
-        """Ungünstigster Fall: Hinweis und alle drei Aufgaben gleichzeitig sichtbar."""
+        """Ungünstigster Fall: Hinweis und beide Hintergrundaufgaben gleichzeitig sichtbar
+        (Export und Vorschau haben ein eigenes Fenster, siehe unten)."""
         win.notice.show_message(
             "3 Foto(s) und Video(s) hinzugefügt, nach Aufnahmedatum einsortiert.\n"
             "1 doppelte Datei ist in der Zeitleiste mit „doppelt“ markiert.", "warning")
@@ -112,9 +113,6 @@ def main(argv: list[str] | None = None) -> int:
         win.video_row.start("Videos werden für die Show umgewandelt: 2 von 7 "
                             "(„20260714_101500.mp4“), dieses Video noch ca. 12 min", lambda: None)
         win.video_row.update_progress(win.video_row.text, 0.2)
-        win.render_row.start("Video wird erstellt: Element 12 von 240 wird vorbereitet",
-                             lambda: None)
-        win.render_row.update_progress(win.render_row.text, 0.43)
         win.import_row.update_progress(win.import_row.text, 0.3)
 
     def expanded() -> None:
@@ -152,7 +150,24 @@ def main(argv: list[str] | None = None) -> int:
         report["states"][name] = problems
         report["files"].append(str(file))
 
-    report["problems"] = sorted({p for ps in report["states"].values() for p in ps})
+    # Fortschrittsfenster von Export und Vorschau: eigenes Fenster mittig, längster Text
+    dialog = win.render_dialog
+    dialog.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+    dialog.start("Vorschau von Element 120 bis 240 wird erstellt", lambda: None)
+    dialog.update_progress("Abschnitt 7 von 12 wird zusammengesetzt", 0.43)
+    settle()
+    file = out / f"{tag}-fortschritt.png"
+    dialog.grab().save(str(file))
+    report["files"].append(str(file))
+    report["render_dialog"] = {
+        "size": [dialog.width(), dialog.height()],
+        "problems": clipped_widgets(dialog),
+        "modal": dialog.windowModality() != Qt.WindowModality.NonModal,
+    }
+    dialog.finish()
+
+    report["problems"] = sorted({p for ps in report["states"].values() for p in ps}
+                                | set(report["render_dialog"]["problems"]))
     win.dirty = False
     win.shutdown()
     print(json.dumps(report, ensure_ascii=False))

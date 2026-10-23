@@ -91,7 +91,7 @@ Text mit Pillow als transparentes PNG rendern, per overlay einblenden. Kein draw
 - Vor dem Rendern freien Speicherplatz im Temp-Ordner prüfen (Faustregel: 3× Quellgröße), sonst klare Fehlermeldung
 - Samsung Motion Photos: in V1 nur das Standbild verwenden
 - Duplikate (gleicher Hash) beim Import melden, nicht stillschweigend entfernen
-- Rendern läuft im Hintergrund-Thread, abbrechbar, GUI bleibt bedienbar
+- Rendern läuft im Hintergrund-Thread und ist abbrechbar. Export und Vorschau zeigen den Fortschritt in einem eigenen gelben Fenster mittig auf dem Bildschirm, das das Hauptfenster bis zum Ende oder Abbrechen sperrt (Entscheidung Andreas, 23.10.2026); das Hauptfenster zeichnet sich dabei weiter. Einlesen und Videos umwandeln laufen nebenher in der Aufgabenzeile unten, die Oberfläche bleibt dabei bedienbar.
 
 ## GUI-Regeln
 - Muss bei 1920×1080 mit 150 % Windows-Skalierung voll bedienbar sein (T490s)
