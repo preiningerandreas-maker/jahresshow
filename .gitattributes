@@ -1,0 +1,26 @@
+# Zeilenenden einheitlich, unabhängig von core.autocrlf auf dem jeweiligen Rechner:
+# Textdateien haben im Repository und im Arbeitsordner LF. Werkzeuge wie sed, die LF
+# schreiben, verstellen dadurch nichts mehr.
+* text=auto eol=lf
+
+# Ausnahmen mit CRLF: Windows-Skripte und die README für Endnutzer (ältere Editoren)
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+packaging/README.txt text eol=crlf
+
+# Binärdateien nie verändern
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.heic binary
+*.mp3 binary
+*.m4a binary
+*.mp4 binary
+*.mov binary
+*.wav binary
+*.flac binary
+*.ttf binary
+*.ico binary
+*.exe binary
+*.dll binary
