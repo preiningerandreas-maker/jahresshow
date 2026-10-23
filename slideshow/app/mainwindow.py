@@ -45,6 +45,7 @@ from slideshow.app.icons import icon
 from slideshow.app.music import MusicPanel, format_minutes
 from slideshow.app.properties import ItemPanel, ProjectPanel
 from slideshow.app.renderdialog import RenderDialog
+from slideshow.app.reveal import reveal_in_explorer
 from slideshow.app.still import StillPreview
 from slideshow.app.tasks import Task, VideoPrep
 from slideshow.app.theme import apply_theme, dark_title_bar
@@ -210,13 +211,17 @@ def _scroll(widget: QWidget) -> QScrollArea:
 
 class MainWindow(QMainWindow):
     def __init__(self, *, cache_dir: Path | None = None, encoder: str | None = None,
-                 open_file: Callable[[Path], None] | None = None) -> None:
+                 open_file: Callable[[Path], None] | None = None,
+                 reveal_file: Callable[[Path], None] | None = None) -> None:
+        """open_file: Datei öffnen (Vorschau im Player). reveal_file: Datei im Explorer
+        zeigen (fertiges Video)."""
         super().__init__()
         app = QApplication.instance()
         if isinstance(app, QApplication):
             apply_theme(app)
         self.cache_dir = cache_dir or default_cache_dir()
         self.forced_encoder = encoder
+        self.reveal_file = reveal_file or reveal_in_explorer
         self.open_file = open_file or (
             lambda p: QDesktopServices.openUrl(QUrl.fromLocalFile(str(p))))
         self.project = new_project()
@@ -1133,12 +1138,14 @@ class MainWindow(QMainWindow):
             text += f"\nAchtung: {w}"
         text += self._encoder_summary(result)
         text += self._skipped_summary(result)
-        folder = result.output.parent
+        output = result.output
         problems = result.warnings or result.skipped or result.fallback_element is not None
-        self.notice.show_message(
-            text, "warning" if problems else "success",
-            ("Ordner öffnen", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))))
+        self.notice.show_message(text, "warning" if problems else "success",
+                                 ("Ordner öffnen", lambda: self.reveal_file(output)))
         QApplication.alert(self)
+        # Explorer mit dem fertigen Video öffnen, die Datei ist dort markiert
+        if output.is_file():
+            self.reveal_file(output)
 
     # --- Zweiter Programmstart ------------------------------------------------------
 
