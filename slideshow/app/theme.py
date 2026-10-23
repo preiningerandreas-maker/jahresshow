@@ -2,8 +2,9 @@
 Palette und Stylesheet (QSS). Ruhig gehalten: dünne Linien statt Rahmen, keine Schatten,
 keine Verläufe, keine Animationen. Blau nur für Auswahl, aktive Reiter und den Hauptknopf.
 
-Lesbarkeit (WCAG AA, Text mindestens 4.5:1): Gedämpfter Text steht nur auf dem Hintergrund
-(4.8:1), auf Blau steht dunkle Schrift (4.8:1), siehe TEXT_ON und tests/test_theme.py."""
+Lesbarkeit (WCAG AA, Text mindestens 4.5:1): Gedämpfter Text erreicht auf Hintergrund,
+Bereichen und Eingabefeldern mindestens 4.5:1, auf Blau steht weiße Schrift (5.1:1), siehe
+TEXT_ON und tests/test_theme.py."""
 
 from __future__ import annotations
 
@@ -21,15 +22,16 @@ TOKENS = {
     "input": "#2E2E2E",  # Eingabefelder und Knöpfe
     "line": "#3A3A3A",  # Trennlinien
     "text": "#D4D4D4",  # Text
-    "muted": "#8A8A8A",  # gedämpfter Text, nur auf "bg"
-    "accent": "#2D8CEB",  # Auswahl, aktiver Reiter, Hauptknopf
+    "muted": "#969696",  # gedämpfter Text (Hinweise, Statusleiste, Monitor-Titel)
+    "accent": "#1F6FC5",  # Auswahl, aktiver Reiter, Hauptknopf
+    "on_accent": "#FFFFFF",  # Schrift auf Blau
 }
 
 # Textfarbe → Hintergründe, auf denen sie vorkommt (für den Kontrast-Test)
 TEXT_ON = {
     "text": ("bg", "area", "input", "line"),
-    "muted": ("bg",),
-    "bg": ("accent",),  # dunkle Schrift auf Blau (Hauptknopf, markierte Listeneinträge)
+    "muted": ("bg", "area", "input"),
+    "on_accent": ("accent",),  # Hauptknopf, markierte Menü- und Listeneinträge
 }
 
 RADIUS = 4  # Kacheln und Knöpfe leicht abgerundet
@@ -65,7 +67,7 @@ def palette() -> QPalette:
     for role, name in ((R.Window, "bg"), (R.WindowText, "text"), (R.Base, "input"),
                        (R.AlternateBase, "area"), (R.Text, "text"), (R.Button, "input"),
                        (R.ButtonText, "text"), (R.BrightText, "text"),
-                       (R.Highlight, "accent"), (R.HighlightedText, "bg"),
+                       (R.Highlight, "accent"), (R.HighlightedText, "on_accent"),
                        (R.PlaceholderText, "muted"), (R.ToolTipBase, "area"),
                        (R.ToolTipText, "text"), (R.Light, "line"), (R.Midlight, "line"),
                        (R.Mid, "line"), (R.Dark, "bg"), (R.Shadow, "bg"),
@@ -88,7 +90,7 @@ QMenuBar::item {{ background: transparent; padding: 4px 10px; }}
 QMenuBar::item:selected {{ background: {input}; color: {text}; }}
 QMenu {{ background: {area}; color: {text}; border: 1px solid {line}; padding: 3px; }}
 QMenu::item {{ padding: 4px 22px 4px 10px; }}
-QMenu::item:selected {{ background: {accent}; color: {bg}; }}
+QMenu::item:selected {{ background: {accent}; color: {on_accent}; }}
 QMenu::separator {{ height: 1px; background: {line}; margin: 3px 6px; }}
 
 QToolBar {{ background: {area}; border: none; border-bottom: 1px solid {line};
@@ -98,7 +100,7 @@ QToolBar QToolButton {{ background: {area}; color: {text}; border: 1px solid tra
                        border-radius: {radius}px; padding: 3px 7px; }}
 QToolBar QToolButton:hover {{ border-color: {line}; }}
 QToolBar QToolButton:pressed {{ background: {input}; }}
-QToolButton#primaryButton {{ background: {accent}; color: {bg}; font-weight: 600;
+QToolButton#primaryButton {{ background: {accent}; color: {on_accent}; font-weight: 600;
                             border: none; border-radius: {radius}px; padding: 4px 12px; }}
 QToolButton#primaryButton:hover {{ border: none; }}
 QToolButton#primaryButton:disabled {{ background: {line}; color: {muted}; }}
@@ -108,6 +110,8 @@ QSplitter::handle:horizontal {{ width: 1px; }}
 QWidget#rasterPane, QWidget#monitorPane {{ background: {bg}; }}
 QWidget#propertiesPane {{ background: {area}; }}
 QLabel#monitorTitle {{ color: {muted}; background: {bg}; padding: 4px 8px; }}
+QLabel#emptyHint {{ color: {muted}; background: {bg}; }}
+QLabel#propertiesHint {{ color: {muted}; background: {area}; }}
 
 QTabWidget::pane {{ border: none; border-top: 1px solid {line}; background: {area}; }}
 QTabBar {{ background: {area}; }}
@@ -130,7 +134,7 @@ QCheckBox::indicator:disabled {{ border-color: {line}; }}
 
 QLineEdit, QPlainTextEdit, QAbstractSpinBox, QComboBox {{
     background: {input}; color: {text}; border: 1px solid {line}; border-radius: 3px;
-    padding: 2px 4px; selection-background-color: {accent}; selection-color: {bg}; }}
+    padding: 2px 4px; selection-background-color: {accent}; selection-color: {on_accent}; }}
 QLineEdit:focus, QPlainTextEdit:focus, QAbstractSpinBox:focus, QComboBox:focus {{
     border-color: {text}; }}
 QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {{
@@ -142,7 +146,7 @@ QAbstractSpinBox::down-arrow, QComboBox::down-arrow {{
     image: url("{down}"); width: 10px; height: 10px; }}
 QComboBox::drop-down {{ border: none; width: 18px; }}
 QComboBox QAbstractItemView {{ background: {area}; color: {text}; border: 1px solid {line};
-                              selection-background-color: {accent}; selection-color: {bg}; }}
+                              selection-background-color: {accent}; selection-color: {on_accent}; }}
 
 QPushButton {{ background: {input}; color: {text}; border: 1px solid {line};
               border-radius: 3px; padding: 4px 10px; }}
@@ -152,7 +156,7 @@ QPushButton:disabled {{ color: {muted}; }}
 
 QListView#timeline {{ background: {bg}; border: none; color: {text}; }}
 QListWidget {{ background: {input}; color: {text}; border: 1px solid {line}; }}
-QListWidget::item:selected {{ background: {accent}; color: {bg}; }}
+QListWidget::item:selected {{ background: {accent}; color: {on_accent}; }}
 
 QScrollBar:vertical {{ background: {bg}; width: 10px; margin: 0; }}
 QScrollBar:horizontal {{ background: {bg}; height: 10px; margin: 0; }}

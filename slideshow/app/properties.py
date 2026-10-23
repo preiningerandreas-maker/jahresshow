@@ -133,6 +133,7 @@ class ItemPanel(QWidget):
         self.hint = QLabel("Klicken Sie in der Zeitleiste auf ein Foto, Video oder einen "
                            "Titel, um es hier zu bearbeiten. Mit Strg oder Umschalt können "
                            "Sie mehrere markieren.")
+        self.hint.setObjectName("propertiesHint")
         self.hint.setWordWrap(True)
         outer.addWidget(self.hint)
 
@@ -188,7 +189,7 @@ class ItemPanel(QWidget):
         self.text_box = QGroupBox("Text im Bild (optional)")
         xform = form_layout(self.text_box)
         self.text = QPlainTextEdit()
-        # Hinweis als Tooltip statt Platzhalter: gedämpfter Text wäre im Eingabefeld zu blass
+        # Hinweis als Tooltip statt Platzhalter: bleibt sichtbar, auch wenn Text drinsteht
         self.text.setToolTip("Text, der im Bild erscheint. Leer lassen für kein Text.")
         self.text.setTabChangesFocus(True)
         fm = self.text.fontMetrics()

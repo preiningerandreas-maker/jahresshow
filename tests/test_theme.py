@@ -13,7 +13,15 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import QRect
 from PySide6.QtGui import QColor, QImage, QPainter
-from PySide6.QtWidgets import QApplication, QLineEdit, QPlainTextEdit, QStyle, QStyleOptionViewItem
+from PySide6.QtWidgets import (
+    QApplication,
+    QLabel,
+    QLineEdit,
+    QPlainTextEdit,
+    QStyle,
+    QStyleOptionViewItem,
+    QWidget,
+)
 
 from slideshow.app import theme
 from slideshow.app.icons import ICON_DIR, icon
@@ -27,7 +35,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_tokens_as_specified() -> None:
     assert T == {"bg": "#1E1E1E", "area": "#252525", "input": "#2E2E2E", "line": "#3A3A3A",
-                 "text": "#D4D4D4", "muted": "#8A8A8A", "accent": "#2D8CEB"}
+                 "text": "#D4D4D4", "muted": "#969696", "accent": "#1F6FC5",
+                 "on_accent": "#FFFFFF"}
 
 
 def test_contrast_formula_matches_wcag_examples() -> None:
@@ -44,12 +53,13 @@ def test_text_contrast_at_least_aa(fg: str, bg: str) -> None:
 
 
 def test_combinations_below_aa_are_not_declared() -> None:
-    """Dokumentiert, warum gedämpfter Text nur auf dem Hintergrund steht und auf Blau dunkle
-    Schrift: die übrigen Kombinationen erreichen 4.5:1 nicht."""
-    assert contrast(T["muted"], T["area"]) < 4.5
-    assert contrast(T["muted"], T["input"]) < 4.5
-    assert contrast("#FFFFFF", T["accent"]) < 4.5
-    assert "area" not in TEXT_ON["muted"] and "input" not in TEXT_ON["muted"]
+    """Dokumentiert, warum auf Blau weiße Schrift steht und gedämpfter Text nicht auf
+    Trennlinien-Grau: diese Kombinationen erreichen 4.5:1 nicht."""
+    assert contrast(T["bg"], T["accent"]) < 4.5
+    assert contrast(T["text"], T["accent"]) < 4.5
+    assert contrast(T["muted"], T["line"]) < 4.5
+    assert "line" not in TEXT_ON["muted"]
+    assert list(TEXT_ON["on_accent"]) == ["accent"]
 
 
 def rules(qss: str) -> list[tuple[str, dict[str, str]]]:
@@ -82,20 +92,37 @@ def test_accent_only_for_selection_tabs_and_main_button() -> None:
                        or "#primaryButton" in sel)
             assert allowed, f"Blau in {sel} {{ {key} }}"
             if key in ("background", "selection-background-color"):
-                # Schrift auf Blau ist dunkel (4.8:1); weiß hätte nur 3.5:1
+                # Schrift auf Blau ist weiß (5.1:1); dunkel hätte nur 3.3:1
                 text_key = "color" if key == "background" else "selection-color"
-                assert props.get(text_key) == T["bg"], sel
+                assert props.get(text_key) == T["on_accent"], sel
 
 
-def test_muted_text_only_on_background_or_disabled() -> None:
+def test_muted_text_only_on_aa_backgrounds_or_disabled() -> None:
+    allowed = {T[bg] for bg in TEXT_ON["muted"]}
+    used = []
     for sel, props in rules(stylesheet()):
         if props.get("color") != T["muted"]:
             continue
-        assert ":disabled" in sel or props.get("background") == T["bg"], sel
+        assert ":disabled" in sel or props.get("background") in allowed, sel
+        used.append(sel)
+    # gedämpft: Hinweise in Raster und Eigenschaften, Monitor-Titel, Statusleiste
+    for sel in ("QLabel#emptyHint", "QLabel#propertiesHint", "QLabel#monitorTitle",
+                "QStatusBar QLabel"):
+        assert sel in used, sel
+
+
+def test_hint_labels_sit_on_their_background(themed_window: MainWindow) -> None:
+    """Die gedämpften Hinweise liegen auf den Flächen, für die der Kontrast gilt."""
+    w = themed_window
+    raster = w.findChild(QWidget, "rasterPane")
+    props = w.findChild(QWidget, "propertiesPane")
+    hint = w.findChild(QLabel, "propertiesHint")
+    assert w.empty_hint.objectName() == "emptyHint" and raster.isAncestorOf(w.empty_hint)
+    assert hint is not None and props.isAncestorOf(hint)
 
 
 def test_no_placeholder_text_in_inputs(qtbot, tmp_path: Path) -> None:  # noqa: ANN001
-    """Platzhalter erscheinen gedämpft im Eingabefeld (nur 3.9:1), daher keine."""
+    """Hinweise stehen im Tooltip statt als Platzhalter (der verschwindet beim Tippen)."""
     w = MainWindow(cache_dir=tmp_path / "cache", encoder="libx264")
     qtbot.addWidget(w)
     try:
@@ -209,11 +236,13 @@ def test_export_button_check_detects_overflow(qtbot, tmp_path: Path) -> None:  #
         w.shutdown()
 
 
-def test_primary_button_dark_text_on_accent(themed_window: MainWindow) -> None:
+def test_primary_button_white_text_on_accent(themed_window: MainWindow) -> None:
     img = themed_window.export_button.grab().toImage()
     colors = {img.pixelColor(x, y).name().upper()
               for x in range(img.width()) for y in range(img.height())}
     assert T["accent"] in colors
+    assert T["on_accent"] in colors  # Schrift und Symbol weiß
+    assert T["bg"] not in colors  # keine dunkle Schrift mehr
 
 
 def test_tile_selection_is_blue_border(themed_window: MainWindow, tmp_path: Path) -> None:
@@ -279,5 +308,5 @@ def test_theme_applies_dark_palette(themed_window: MainWindow) -> None:
     pal = app.palette()
     assert pal.color(pal.ColorRole.Window).name().upper() == T["bg"]
     assert pal.color(pal.ColorRole.Highlight).name().upper() == T["accent"]
-    assert pal.color(pal.ColorRole.HighlightedText).name().upper() == T["bg"]
+    assert pal.color(pal.ColorRole.HighlightedText).name().upper() == T["on_accent"]
     assert app.styleSheet() == stylesheet()

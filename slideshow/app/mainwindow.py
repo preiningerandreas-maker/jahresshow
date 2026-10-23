@@ -274,6 +274,7 @@ class MainWindow(QMainWindow):
             "Fügen Sie Fotos und Videos hinzu: „Ordner hinzufügen“ oben oder Dateien aus dem "
             "Explorer hierher ziehen. Die Reihenfolge ändern Sie, indem Sie Bilder in der "
             "Zeitleiste verschieben.")
+        self.empty_hint.setObjectName("emptyHint")
         self.empty_hint.setWordWrap(True)
         self.empty_hint.setContentsMargins(6, 6, 6, 6)
         left_lay.addWidget(self.empty_hint)
@@ -409,11 +410,11 @@ class MainWindow(QMainWindow):
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         tb.addWidget(spacer)
-        # Einziger hervorgehobener Knopf, rechts: dunkle Schrift auf Blau (Kontrast 4.8:1)
+        # Einziger hervorgehobener Knopf, rechts: weiße Schrift auf Blau (Kontrast 5.1:1)
         primary = QToolButton()
         primary.setObjectName("primaryButton")
         primary.setText("Video erstellen")
-        primary.setIcon(icon("arrow_export_ltr", "bg"))
+        primary.setIcon(icon("arrow_export_ltr", "on_accent"))
         primary.setIconSize(QSize(18, 18))
         primary.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         primary.setToolTip(self.act_export.toolTip())
