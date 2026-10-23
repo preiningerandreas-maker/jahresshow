@@ -1,10 +1,14 @@
 """Lizenztexte aller mitgelieferten Teile in den Ordner „Lizenzen“ des Pakets legen.
 
-Aufruf (aus build.ps1): python packaging/collect_licenses.py <dist/Jahresshow> <ffmpeg.exe>
+Aufruf (aus build.ps1): python packaging/collect_licenses.py <dist/Jahresshow> <bin>
+
+<bin> enthält den „shared“-Build von gyan.dev: ffmpeg.exe, ffprobe.exe, die DLLs sowie
+LICENSE und README.txt aus dem Archiv.
 """
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
@@ -24,23 +28,53 @@ def dist_file(package: str, name: str) -> Path:
     raise FileNotFoundError(f"{name} fehlt in den Metadaten von {package}")
 
 
-def ffmpeg_notice(ffmpeg: Path) -> str:
+def ffmpeg_license(configuration: str) -> str:
+    """Lizenz der FFmpeg-Bibliotheken nach den Build-Optionen."""
+    if "--enable-nonfree" in configuration:
+        raise SystemExit("FFmpeg mit --enable-nonfree darf nicht weitergegeben werden.")
+    gpl = "--enable-gpl" in configuration
+    v3 = "--enable-version3" in configuration
+    if gpl:
+        return "GPL 3 oder später" if v3 else "GPL 2 oder später"
+    return "LGPL 3 oder später" if v3 else "LGPL 2.1 oder später"
+
+
+def ffmpeg_notice(dist: Path, ffmpeg: Path) -> str:
     def run(*args: str) -> str:
         return subprocess.run([str(ffmpeg), "-hide_banner", *args], capture_output=True,
                               encoding="utf-8", errors="replace", check=True).stdout
 
-    version = run("-version").splitlines()[0]
+    version_text = run("-version")
+    lines = version_text.splitlines()
+    license_name = ffmpeg_license(version_text)
+    # „libavcodec     63.  1.102 / 63.  1.102“ -> {"avcodec": "63.1.102"}
+    versions = {}
+    for line in lines:
+        m = re.match(r"lib(\w+)\s+([\d.\s]+?)\s*/", line)
+        if m:
+            versions[m.group(1)] = re.sub(r"\s+", "", m.group(2))
+    dll_lines = []
+    for dll in sorted(dist.glob("*.dll")):
+        name = dll.name.rsplit("-", 1)[0]
+        if name not in versions:
+            raise SystemExit(f"{dll.name} gehört nicht zu FFmpeg ({lines[0]})")
+        dll_lines.append(f"{dll.name:<22}lib{name} {versions[name]:<12}{license_name}")
     return (
-        f"{version}\n\n"
-        "Mitgeliefert als ffmpeg.exe und ffprobe.exe (unverändert, Build von gyan.dev).\n"
-        "Lizenz: GPL Version 3 oder später, siehe GPL-3.0.txt.\n"
+        f"{lines[0]}\n\n"
+        "Mitgeliefert unverändert als „shared“-Build von gyan.dev: ffmpeg.exe, ffprobe.exe\n"
+        "und diese Bibliotheken, die sich beide Programme teilen:\n\n"
+        + "\n".join(dll_lines) + "\n\n"
+        f"Lizenz: {license_name} (gebaut mit --enable-gpl --enable-version3), siehe\n"
+        "GPL-3.0.txt und den Lizenztext aus dem Build in FFmpeg-LICENSE.txt.\n"
+        "Die in die DLLs eingebauten Bibliotheken (u. a. x264, x265, zimg, libvpl, dav1d)\n"
+        "stehen mit ihren Versionen in FFmpeg-Build-gyan.txt (README.txt des Builds).\n"
         "Quelltext: https://ffmpeg.org/download.html und https://www.gyan.dev/ffmpeg/builds/\n"
         "(dort zu jedem Build die Versionsangabe und die verwendeten Bibliotheken).\n\n"
         "Lizenzhinweis von ffmpeg -L:\n\n" + run("-L")
     )
 
 
-def collect(target: Path, ffmpeg: Path) -> list[Path]:
+def collect(target: Path, bin_dir: Path) -> list[Path]:
     out = target / "Lizenzen"
     if out.exists():
         shutil.rmtree(out)
@@ -56,10 +90,13 @@ def collect(target: Path, ffmpeg: Path) -> list[Path]:
         "PyInstaller.txt": dist_file("pyinstaller", "COPYING.txt"),
         "Noto-Sans-OFL.txt": ROOT / "slideshow" / "assets" / "fonts" / "OFL.txt",
         "Fluent-UI-System-Icons-MIT.txt": ROOT / "slideshow" / "assets" / "icons" / "LICENSE.txt",
+        "FFmpeg-LICENSE.txt": bin_dir / "LICENSE",
+        "FFmpeg-Build-gyan.txt": bin_dir / "README.txt",
     }
     for name, src in copies.items():
         shutil.copyfile(src, out / name)
-    (out / "FFmpeg.txt").write_text(ffmpeg_notice(ffmpeg), encoding="utf-8")
+    (out / "FFmpeg.txt").write_text(ffmpeg_notice(target, bin_dir / "ffmpeg.exe"),
+                                    encoding="utf-8")
     pyside = metadata.version("PySide6")
     (out / "Qt-PySide6.txt").write_text(
         f"Qt for Python (PySide6, shiboken6) {pyside} mit den Qt-Bibliotheken.\n"
@@ -71,7 +108,8 @@ def collect(target: Path, ffmpeg: Path) -> list[Path]:
         encoding="utf-8")
     (out / "UEBERSICHT.txt").write_text(
         "Jahresshow enthält folgende Fremdsoftware:\n\n"
-        "- FFmpeg (ffmpeg.exe, ffprobe.exe): GPL 3, siehe FFmpeg.txt\n"
+        "- FFmpeg (ffmpeg.exe, ffprobe.exe und die DLLs av*.dll, sw*.dll im Programm-\n"
+        "  ordner): GPL 3, siehe FFmpeg.txt, FFmpeg-LICENSE.txt und FFmpeg-Build-gyan.txt\n"
         "- Qt for Python / Qt: LGPL 3, siehe Qt-PySide6.txt\n"
         "- Python: PSF-Lizenz, siehe Python.txt\n"
         "- Pillow: MIT-CMU, siehe Pillow.txt\n"

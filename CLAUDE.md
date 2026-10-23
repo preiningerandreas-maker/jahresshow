@@ -43,7 +43,7 @@ Animationen, Ken Burns, Collagen, Rahmen, Beat-Sync, DVD, Cloud, Mehrsprachigkei
 
 ## Stack
 - Python 3.12.10 (wie in `.venv`), PySide6, Pillow, pillow-heif, pytest, pytest-qt, ruff
-- FFmpeg/ffprobe als externe Binaries in `bin/` (gyan.dev full build, nicht im Git)
+- FFmpeg/ffprobe als externe Binaries in `bin/` (gyan.dev full_build-shared mit DLLs, nicht im Git)
 - Verpackung: PyInstaller **onedir**, ffmpeg.exe und ffprobe.exe im Ausgabeordner
 
 ## Architektur

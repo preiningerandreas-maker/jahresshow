@@ -22,6 +22,9 @@ ROOT = TESTS.parent
 DIST = ROOT / "dist" / "Jahresshow"
 EXE = DIST / "Jahresshow.exe"
 SIZE_LIMIT_MB = 500
+# FFmpeg als „shared“-Build: ffmpeg.exe und ffprobe.exe teilen sich diese Bibliotheken
+FFMPEG_DLLS = ("avcodec", "avdevice", "avfilter", "avformat", "avutil", "swresample",
+               "swscale")
 
 pytestmark = [
     pytest.mark.slow,
@@ -114,8 +117,52 @@ def test_package_contents() -> None:
             "GPL-2.0.txt", "LGPL-3.0.txt"} <= licenses
     ffmpeg_notice = (DIST / "Lizenzen" / "FFmpeg.txt").read_text(encoding="utf-8")
     assert "ffmpeg version" in ffmpeg_notice and "GNU General Public License" in ffmpeg_notice
+    # Jede mitgelieferte FFmpeg-DLL steht mit Version und Lizenz in FFmpeg.txt; dazu der
+    # Lizenztext und die Bibliotheksliste des Builds unverändert
+    dlls = sorted(p.name for p in DIST.glob("*.dll"))
+    assert sorted(re.sub(r"-\d+\.dll$", "", n) for n in dlls) == sorted(FFMPEG_DLLS)
+    for dll in dlls:
+        assert re.search(rf"^{re.escape(dll)}\s+lib\w+ \d+\.\s*\d+\.\d+ .*GPL 3", ffmpeg_notice,
+                         re.MULTILINE), dll
+    assert {"FFmpeg-LICENSE.txt", "FFmpeg-Build-gyan.txt"} <= licenses
+    assert "GNU GENERAL PUBLIC LICENSE" in (DIST / "Lizenzen" / "FFmpeg-LICENSE.txt").read_text(
+        encoding="utf-8")
+    build = (DIST / "Lizenzen" / "FFmpeg-Build-gyan.txt").read_text(encoding="utf-8")
+    for lib in ("libx264", "libzimg", "libvpl", "libx265"):
+        assert lib in build, lib
+    assert "external libraries' versions" in build
+    assert not (DIST / "ffplay.exe").exists()
     assert "GNU LESSER GENERAL PUBLIC LICENSE" in (DIST / "Lizenzen" / "LGPL-3.0.txt").read_text(
         encoding="utf-8")
+
+
+def test_packaged_ffmpeg_has_required_features(tmp_path: Path) -> None:
+    """Das mitgelieferte FFmpeg (shared-Build mit den DLLs daneben) läuft ohne Hilfe von
+    außen und kann alles, was Jahresshow braucht."""
+    env = clean_env(tmp_path)
+    env["PATH"] = os.pathsep.join(p for p in env["PATH"].split(os.pathsep)
+                                  if not (Path(p) / "ffmpeg.exe").exists())
+
+    def run(exe: str, *args: str) -> str:
+        res = subprocess.run([str(DIST / exe), "-hide_banner", *args], capture_output=True,
+                             text=True, encoding="utf-8", errors="replace", env=env,
+                             cwd=tmp_path, timeout=60, check=False)
+        assert res.returncode == 0, res.stderr
+        return res.stdout
+
+    version = run("ffmpeg.exe", "-version")
+    assert "--enable-shared" in version and "--enable-libzimg" in version
+    assert "--enable-libx264" in version and "--enable-libvpl" in version
+    assert "--enable-shared" in run("ffprobe.exe", "-version")
+
+    def listed(kind: str) -> set[str]:
+        return {line.split()[1] for line in run("ffmpeg.exe", f"-{kind}").splitlines()
+                if len(line.split()) > 1 and line.startswith(" ")}
+
+    filters = listed("filters")
+    assert {"zscale", "tonemap", "xfade", "acrossfade", "overlay", "boxblur"} <= filters
+    assert {"h264_qsv", "libx264", "h264_nvenc", "h264_amf", "aac", "flac"} <= listed("encoders")
+    assert {"hevc", "h264", "mjpeg", "png", "aac"} <= listed("decoders")
 
 
 def test_package_size_and_qt_modules() -> None:
