@@ -20,10 +20,24 @@ PART_MARK = ".part"
 STALE_PART_AGE = 24 * 3600  # Sekunden; ältere Zwischendateien stammen von Abstürzen
 
 
-def default_cache_dir() -> Path:
+DATA_DIR = "Flashback"
+OLD_DATA_DIR = "Jahresshow"  # Name bis Oktober 2026
+
+
+def data_root() -> Path:
+    """Datenordner (%LOCALAPPDATA%\\Flashback). Gibt es nur den Ordner unter dem alten
+    Namen, wird er umbenannt: umgewandelte Videos, Vorschaubilder und Einstellungen bleiben."""
     base = os.environ.get("LOCALAPPDATA")
     root = Path(base) if base else Path.home() / ".cache"
-    return root / "Jahresshow" / "cache"
+    new, old = root / DATA_DIR, root / OLD_DATA_DIR
+    if not new.exists() and old.is_dir():
+        with contextlib.suppress(OSError):  # z. B. vom alten Programm noch geöffnet
+            old.rename(new)
+    return new
+
+
+def default_cache_dir() -> Path:
+    return data_root() / "cache"
 
 
 def file_fingerprint(path: Path) -> dict[str, Any]:

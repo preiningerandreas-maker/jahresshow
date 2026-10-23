@@ -1,21 +1,23 @@
-Jahresshow
-==========
+Flashback
+=========
 
-Jahresshow macht aus Fotos und Videos eine Slideshow mit Musik und Texten und speichert sie
+© 2026 Andreas Preininger
+
+Flashback macht aus Fotos und Videos eine Slideshow mit Musik und Texten und speichert sie
 als MP4-Video, zum Beispiel für einen Jahresrückblick am Fernseher.
 
 
 Starten
 -------
 
-1. Den ganzen Ordner "Jahresshow" auf den Computer kopieren, zum Beispiel nach
+1. Den ganzen Ordner "Flashback" auf den Computer kopieren, zum Beispiel nach
    "Dokumente". Kommt das Programm als ZIP-Datei, diese zuerst entpacken
    (rechte Maustaste, "Alle extrahieren"). Aus der ZIP-Datei heraus startet es nicht.
-2. Im Ordner doppelt auf "Jahresshow.exe" klicken.
+2. Im Ordner doppelt auf "Flashback.exe" klicken.
 3. Fotos und Videos mit "Ordner" oder "Dateien" oben in der Leiste hinzufügen oder
    aus dem Explorer in das Fenster ziehen. Mit "Video erstellen" entsteht das MP4.
 
-Für eine Verknüpfung auf dem Desktop: rechte Maustaste auf "Jahresshow.exe",
+Für eine Verknüpfung auf dem Desktop: rechte Maustaste auf "Flashback.exe",
 "Senden an", "Desktop (Verknüpfung erstellen)".
 
 Die Dateien im Ordner gehören zusammen. Bitte nichts daraus löschen oder verschieben,
@@ -60,19 +62,21 @@ Wo landen die Daten?
 
 - Ihre Projekte speichern Sie selbst, zum Beispiel unter "Dokumente".
 - Zwischendateien (umgewandelte Videos, Vorschaubilder) liegen in
-  %LOCALAPPDATA%\Jahresshow. Sie können diesen Ordner jederzeit löschen, wenn das
+  %LOCALAPPDATA%\Flashback. Sie können diesen Ordner jederzeit löschen, wenn das
   Programm geschlossen ist. Die Dateien werden bei Bedarf neu erstellt.
+- Hieß das Programm bei Ihnen früher "Jahresshow", übernimmt Flashback beim ersten Start
+  den alten Ordner %LOCALAPPDATA%\Jahresshow.
 
 
 Entfernen
 ---------
 
-Den Ordner "Jahresshow" löschen und, wenn gewünscht, %LOCALAPPDATA%\Jahresshow.
+Den Ordner "Flashback" löschen und, wenn gewünscht, %LOCALAPPDATA%\Flashback.
 Das Programm ändert nichts an Windows und muss nicht deinstalliert werden.
 
 
 Lizenzen
 --------
 
-Jahresshow verwendet freie Software, unter anderem FFmpeg, Qt und Python. Die
+Flashback verwendet freie Software, unter anderem FFmpeg, Qt und Python. Die
 Lizenztexte stehen im Ordner "Lizenzen", eine Übersicht in Lizenzen\UEBERSICHT.txt.

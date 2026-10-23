@@ -19,7 +19,7 @@ SIZES = (16, 20, 24, 32, 40, 48)  # Pixel; Qt wählt je nach Skalierung die pass
 
 def svg_file(name: str, color: str) -> Path:
     """Eingefärbte SVG-Datei für Stylesheets (QSS braucht einen Pfad, z. B. für Häkchen)."""
-    folder = Path(tempfile.gettempdir()) / "jahresshow-icons"
+    folder = Path(tempfile.gettempdir()) / "flashback-icons"
     folder.mkdir(parents=True, exist_ok=True)
     out = folder / f"{name}-{color.lstrip('#').lower()}.svg"
     if not out.is_file():

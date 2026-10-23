@@ -3,7 +3,38 @@
 import re
 from pathlib import Path
 
+from PyInstaller.utils.win32.versioninfo import (
+    FixedFileInfo,
+    StringFileInfo,
+    StringStruct,
+    StringTable,
+    VarFileInfo,
+    VarStruct,
+    VSVersionInfo,
+)
+
+from slideshow import APP_NAME, AUTHOR, COPYRIGHT, __version__
+
 ROOT = Path(SPECPATH).parent  # noqa: F821 (von PyInstaller gesetzt)
+
+# Datei-Eigenschaften der exe (Rechtsklick → Eigenschaften → Details)
+_numbers = tuple(int(n) for n in __version__.split(".")) + (0,)
+VERSION = VSVersionInfo(
+    ffi=FixedFileInfo(filevers=_numbers[:4], prodvers=_numbers[:4]),
+    kids=[
+        StringFileInfo([StringTable("040704B0", [  # Deutsch (Deutschland), Unicode
+            StringStruct("CompanyName", AUTHOR),
+            StringStruct("FileDescription", f"{APP_NAME} – Slideshow aus Fotos und Videos"),
+            StringStruct("FileVersion", __version__),
+            StringStruct("InternalName", APP_NAME),
+            StringStruct("LegalCopyright", COPYRIGHT),
+            StringStruct("OriginalFilename", f"{APP_NAME}.exe"),
+            StringStruct("ProductName", APP_NAME),
+            StringStruct("ProductVersion", __version__),
+        ])]),
+        VarFileInfo([VarStruct("Translation", [0x0407, 1200])]),
+    ],
+)
 
 # Qt-Module, die das Programm nicht braucht. Es verwendet nur QtCore, QtGui, QtWidgets,
 # QtNetwork (Named Pipe für die Einzelinstanz) und QtSvg (Symbole).
@@ -62,7 +93,8 @@ exe = EXE(  # noqa: F821
     a.scripts,
     [],
     exclude_binaries=True,
-    name="Jahresshow",
+    name=APP_NAME,
+    version=VERSION,
     console=False,  # Fensterprogramm; die Kommandozeile hängt sich an die Konsole an
     upx=False,  # UPX-gepackte Programme lösen oft Fehlalarme von Virenscannern aus
 )
@@ -71,5 +103,5 @@ coll = COLLECT(  # noqa: F821
     keep(a.binaries),
     keep(a.datas),
     upx=False,
-    name="Jahresshow",
+    name=APP_NAME,
 )

@@ -1,6 +1,6 @@
 """Lizenztexte aller mitgelieferten Teile in den Ordner „Lizenzen“ des Pakets legen.
 
-Aufruf (aus build.ps1): python packaging/collect_licenses.py <dist/Jahresshow> <bin>
+Aufruf (aus build.ps1): python packaging/collect_licenses.py <dist/Flashback> <bin>
 
 <bin> enthält den „shared“-Build von gyan.dev: ffmpeg.exe, ffprobe.exe, die DLLs sowie
 LICENSE und README.txt aus dem Archiv.
@@ -107,7 +107,7 @@ def collect(target: Path, bin_dir: Path) -> list[Path]:
         "und https://download.qt.io/official_releases/qt/\n",
         encoding="utf-8")
     (out / "UEBERSICHT.txt").write_text(
-        "Jahresshow enthält folgende Fremdsoftware:\n\n"
+        "Flashback (© 2026 Andreas Preininger) enthält folgende Fremdsoftware:\n\n"
         "- FFmpeg (ffmpeg.exe, ffprobe.exe und die DLLs av*.dll, sw*.dll im Programm-\n"
         "  ordner): GPL 3, siehe FFmpeg.txt, FFmpeg-LICENSE.txt und FFmpeg-Build-gyan.txt\n"
         "- Qt for Python / Qt: LGPL 3, siehe Qt-PySide6.txt\n"

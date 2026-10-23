@@ -1,7 +1,9 @@
-# Jahresshow
+# Flashback
+
+© 2026 Andreas Preininger. Früher hieß das Projekt „Jahresshow“ (Repository und Projektordner heißen weiter so).
 
 Slideshow aus Fotos und Videos mit eigener Musik und Texten als MP4. Für Entwicklung und
-Tests unter Windows 10/11. Das fertige Paket (`Jahresshow.exe`, ohne Python) entsteht in
+Tests unter Windows 10/11. Das fertige Paket (`Flashback.exe`, ohne Python) entsteht in
 Meilenstein 4.
 
 ## Voraussetzungen
@@ -47,7 +49,7 @@ und ruff. Dauer: einige Minuten; PySide6 belegt installiert rund 650 MB. Mit `-e
 .venv\Scripts\python.exe -m slideshow
 ```
 
-Oder kürzer: `.venv\Scripts\jahresshow.exe`. Mit einer Projektdatei oder Fotos/Videos:
+Oder kürzer: `.venv\Scripts\flashback.exe`. Mit einer Projektdatei oder Fotos/Videos:
 `.venv\Scripts\python.exe -m slideshow gui "D:\Fotos\Projekt 2026.json"`.
 
 Es läuft immer nur ein Fenster. Ein zweiter Start holt das vorhandene Fenster nach vorne und
@@ -76,7 +78,7 @@ Benutzer: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
 ```
 
 Zwischendateien (umgewandelte Videos, Segmente, Vorschaubilder) liegen in
-`%LOCALAPPDATA%\Jahresshow\cache` und können jederzeit gelöscht werden, dann wird neu
+`%LOCALAPPDATA%\Flashback\cache` und können jederzeit gelöscht werden, dann wird neu
 berechnet.
 
 ## Windows-Paket bauen
@@ -86,19 +88,19 @@ berechnet.
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-Ergebnis ist der Ordner `dist\Jahresshow` (PyInstaller onedir) mit `Jahresshow.exe`,
+Ergebnis ist der Ordner `dist\Flashback` (PyInstaller onedir) mit `Flashback.exe`,
 `ffmpeg.exe`, `ffprobe.exe` samt FFmpeg-DLLs, `README.txt` für Endnutzer und dem Ordner
 `Lizenzen`. `build.ps1` prüft vorher, dass FFmpeg zscale, tonemap, xfade, h264_qsv, libx264
 und den HEVC-Decoder enthält. Weitergeben
 wird der ganze Ordner, zum Beispiel als ZIP. Jeder Lauf baut von vorn; die Spezifikation steht
-in `packaging\Jahresshow.spec`, die Endnutzer-README in `packaging\README.txt`.
+in `packaging\Flashback.spec`, die Endnutzer-README in `packaging\README.txt`.
 
 Die gepackte exe ist ein Fensterprogramm. Auf der Kommandozeile rendert sie mit
-`Jahresshow.exe --render projekt.json -o video.mp4`. PowerShell wartet bei Fensterprogrammen
+`Flashback.exe --render projekt.json -o video.mp4`. PowerShell wartet bei Fensterprogrammen
 nur, wenn die Ausgabe weitergeleitet wird, also mit `| Out-Host` am Ende.
 
 Die Tests in `tests\test_package.py` prüfen das gebaute Paket (frische PowerShell ohne
-Python, 50 Fotos, Hilfsprozesse, Render mit ffprobe-Prüfung). Ohne `dist\Jahresshow` werden
+Python, 50 Fotos, Hilfsprozesse, Render mit ffprobe-Prüfung). Ohne `dist\Flashback` werden
 sie übersprungen.
 
 ## Prüfen vor jedem Commit

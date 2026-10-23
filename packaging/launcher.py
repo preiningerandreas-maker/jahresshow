@@ -1,4 +1,4 @@
-"""Einstieg des fertigen Pakets (PyInstaller, siehe Jahresshow.spec)."""
+"""Einstieg des fertigen Pakets (PyInstaller, siehe Flashback.spec)."""
 
 import multiprocessing
 import sys

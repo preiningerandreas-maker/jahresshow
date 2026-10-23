@@ -46,7 +46,7 @@ def run_gui(files: list[str] | None = None) -> int:
     if not instance.acquire():
         if instance.notify_running(files or []):
             return 0  # die laufende Instanz holt ihr Fenster nach vorne
-        QMessageBox.warning(None, APP_NAME, "Jahresshow läuft bereits, reagiert aber nicht. "
+        QMessageBox.warning(None, APP_NAME, f"{APP_NAME} läuft bereits, reagiert aber nicht. "
                             "Bitte warten oder das andere Fenster schließen.")
         return 1
 

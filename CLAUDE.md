@@ -1,4 +1,6 @@
-# Jahresshow – Slideshow-Programm
+# Flashback – Slideshow-Programm
+
+Name seit 23.10.2026: Flashback (vorher Jahresshow; Repository und Python-Paket `slideshow` heißen weiter so). © 2026 Andreas Preininger, sichtbar im Info-Fenster (Hilfe → Über), in der Statusleiste, in den Datei-Eigenschaften der exe und in README.txt.
 
 Schlankes Windows-Programm, das aus Fotos und Videos eine Slideshow mit eigener Musik und Texten als MP4 erzeugt. Fokus: Jahresrückblick mit wenig Aufwand. Kein MAGIX-Klon.
 

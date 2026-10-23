@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from slideshow import APP_NAME, COPYRIGHT, __version__
 from slideshow.app.activity import ActivityPanel, TaskRow
 from slideshow.app.icons import icon
 from slideshow.app.music import MusicPanel, format_minutes
@@ -92,8 +93,7 @@ from slideshow.render.encoder import (
 
 log = logging.getLogger(__name__)
 
-APP_NAME = "Jahresshow"
-PROJECT_FILTER = "Jahresshow-Projekt (*.json)"
+PROJECT_FILTER = f"{APP_NAME}-Projekt (*.json)"
 
 
 def render_project(*args: object, **kwargs: object) -> RenderResult:
@@ -353,6 +353,10 @@ class MainWindow(QMainWindow):
         zoom_label.setToolTip(tip)
         self.statusBar().addPermanentWidget(zoom_label)
         self.statusBar().addPermanentWidget(self.zoom)
+        self.copyright_label = QLabel(COPYRIGHT)
+        self.copyright_label.setObjectName("copyrightLabel")
+        self.copyright_label.setToolTip(f"{APP_NAME} {__version__} – Hilfe → Über {APP_NAME}")
+        self.statusBar().addPermanentWidget(self.copyright_label)
         self.zoom.valueChanged.connect(self.timeline.set_tile_width)
         self.timeline.zoomChanged.connect(self._on_zoom)
 
@@ -450,6 +454,11 @@ class MainWindow(QMainWindow):
         self.gpu_menu.addAction(self.act_gpu_retry)
         self.gpu_menu.aboutToShow.connect(self.update_gpu_menu)
         self.update_gpu_menu()
+        m = menu.addMenu("&Hilfe")
+        self.act_about = self._action(f"Über {APP_NAME} …", self.show_about)
+        m.addAction(self.act_about)
+        self.act_about_qt = self._action("Über Qt …", lambda: QMessageBox.aboutQt(self))
+        m.addAction(self.act_about_qt)
 
         tb = MainToolBar("Werkzeuge")
         tb.setObjectName("mainToolbar")
@@ -499,6 +508,20 @@ class MainWindow(QMainWindow):
         prep.idle.connect(self._on_video_idle)
         prep.converted.connect(self._on_video_converted)
         prep.error.connect(lambda _p, msg: self.notice.show_message(msg, "error"))
+
+    # --- Info ------------------------------------------------------------------------
+
+    def about_text(self) -> str:
+        return (f"<h3>{APP_NAME}</h3>"
+                f"<p>Version {__version__}</p>"
+                "<p>Macht aus Fotos und Videos eine Slideshow mit Musik und Texten und "
+                "speichert sie als MP4-Video.</p>"
+                f"<p>{COPYRIGHT}</p>"
+                f"<p>{APP_NAME} verwendet freie Software, unter anderem FFmpeg, Qt und Python. "
+                "Die Lizenzen stehen im Ordner „Lizenzen“ neben dem Programm.</p>")
+
+    def show_about(self) -> None:
+        QMessageBox.about(self, f"Über {APP_NAME}", self.about_text())
 
     # --- Kodierer --------------------------------------------------------------------
 
@@ -1016,7 +1039,7 @@ class MainWindow(QMainWindow):
             return None
         videos = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.MoviesLocation)
         base = self.project_path.parent if self.project_path else Path(videos)
-        start = str(base / f"{self.project.name or 'Jahresshow'}.mp4")
+        start = str(base / f"{self.project.name or APP_NAME}.mp4")
         path, _ = QFileDialog.getSaveFileName(self, "Show als Video speichern", start,
                                               "MP4-Video (*.mp4)")
         if not path:
