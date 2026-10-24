@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 
 from slideshow.core.chapters import chapter_title, is_chapter_title
 from slideshow.core.importer import PHOTO_EXTS, describe_file
-from slideshow.core.project import Item, Project, TextOverlay, readable_text
+from slideshow.core.project import MAX_VOLUME, Item, Project, TextOverlay, readable_text
 
 FIT_LABELS = {
     "blur": "Unscharfer Hintergrund",
@@ -50,6 +50,26 @@ POSITION_LABELS = {"top": "Oben", "center": "Mitte", "bottom": "Unten"}
 BUNDLED_FONT = "Noto Sans"
 OTHER_FONT = "Andere Schrift wählen …"
 DEFAULT_TEXT = TextOverlay("")
+
+
+class MixedCheckBox(QCheckBox):
+    """Haken, der bei mehreren Elementen „teils/teils“ zeigen kann. Ein Klick darauf schaltet
+    alle ein; erst der nächste Klick schaltet alle aus."""
+
+    def set_values(self, values: list[bool]) -> None:
+        mixed = len(set(values)) > 1
+        self.setTristate(mixed)
+        if mixed:
+            self.setCheckState(Qt.CheckState.PartiallyChecked)
+        else:
+            self.setChecked(bool(values) and values[0])
+
+    def nextCheckState(self) -> None:
+        if self.checkState() == Qt.CheckState.PartiallyChecked:
+            self.setTristate(False)
+            self.setCheckState(Qt.CheckState.Checked)
+        else:
+            super().nextCheckState()
 
 
 class ColorButton(QPushButton):
@@ -121,6 +141,8 @@ class ItemPanel(QWidget):
         self.project: Project | None = None
         self.items: list[Item] = []
         self._loading = False
+        # Hat das Video eine Tonspur? Liefert das Hauptfenster (aus der Zeitleiste)
+        self.has_track: Callable[[Item], bool] = lambda it: it.kind == "video"
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -162,9 +184,23 @@ class ItemPanel(QWidget):
         self.start.setToolTip("Ab welcher Stelle das Video abgespielt wird")
         self.start_label = QLabel("Video ab")
         form.addRow(self.start_label, self.start)
-        self.audio = QCheckBox("Originalton verwenden")
-        self.audio.setToolTip("Ton des Videos abspielen. Die Musik wird währenddessen leiser.")
+        self.audio = MixedCheckBox("Originalton verwenden")
+        self.audio.setToolTip("Ton des Videos abspielen. Die Musik wird währenddessen leiser. "
+                              "Ein Strich bedeutet: nur bei einem Teil der markierten Videos.")
         form.addRow(self.audio)
+        self.volume = QSpinBox()
+        self.volume.setRange(0, round(MAX_VOLUME * 100))
+        self.volume.setSingleStep(10)
+        self.volume.setSuffix(" %")
+        self.volume.setKeyboardTracking(False)
+        self.volume.setToolTip("Lautstärke des Originaltons. 100 % = wie aufgenommen; über "
+                               "100 % wird lauter, kann aber übersteuern.")
+        self.volume_label = QLabel("Lautstärke")
+        form.addRow(self.volume_label, self.volume)
+        self.audio_note = QLabel("")
+        self.audio_note.setObjectName("propertiesHint")
+        self.audio_note.setWordWrap(True)
+        form.addRow(self.audio_note)
         self.fit = combo()
         for key, label in FIT_LABELS.items():
             self.fit.addItem(label, key)
@@ -253,8 +289,9 @@ class ItemPanel(QWidget):
             lambda v: self._apply(lambda it: setattr(it, "duration", v or None)))
         self.start.valueChanged.connect(
             lambda v: self._apply(lambda it: setattr(it, "start", v), kinds=("video",)))
-        self.audio.toggled.connect(
-            lambda v: self._apply(lambda it: setattr(it, "audio", v), kinds=("video",)))
+        self.audio.checkStateChanged.connect(self._on_audio)
+        self.volume.valueChanged.connect(
+            lambda v: self._apply_sound(lambda it: setattr(it, "volume", v / 100)))
         self.use_damaged.toggled.connect(self._on_use_damaged)
         self.fit.currentIndexChanged.connect(
             lambda _i: self._apply(lambda it: setattr(it, "fit", self.fit.currentData()),
@@ -288,6 +325,37 @@ class ItemPanel(QWidget):
                 fn(it)
         self._refresh_header()
         self.changed.emit()
+
+    def _apply_sound(self, fn: Callable[[Item], None]) -> None:
+        """Nur Videos mit Tonspur; bei den anderen gibt es nichts einzustellen."""
+        self._apply(lambda it: fn(it) if self.has_track(it) else None, kinds=("video",))
+
+    def _on_audio(self, state: Qt.CheckState) -> None:
+        if state == Qt.CheckState.PartiallyChecked:
+            return
+        on = state == Qt.CheckState.Checked
+        self._apply_sound(lambda it: setattr(it, "audio", on))
+        self.volume.setEnabled(on)
+
+    def _load_sound(self) -> None:
+        """Haken (an, aus, teils/teils), Lautstärke und Hinweis auf Videos ohne Ton."""
+        videos = [it for it in self.items if it.kind == "video"]
+        tracks = [it for it in videos if self.has_track(it)]
+        self.audio.setEnabled(bool(tracks))
+        self.audio.set_values([it.audio for it in tracks])
+        self.volume.setValue(round(tracks[0].volume * 100) if tracks else 100)
+        self.volume.setEnabled(self.audio.checkState() != Qt.CheckState.Unchecked)
+        silent = len(videos) - len(tracks)
+        if not silent:
+            note = ""
+        elif not tracks:
+            note = ("Dieses Video hat keinen Ton." if len(videos) == 1
+                    else "Die markierten Videos haben keinen Ton.")
+        else:
+            note = (f"{silent} der {len(videos)} markierten Videos haben keinen Ton, für sie "
+                    "ändert sich nichts.")
+        self.audio_note.setText(note)
+        self.audio_note.setVisible(bool(note))
 
     def _on_use_damaged(self, on: bool) -> None:
         def apply(it: Item) -> None:
@@ -403,8 +471,10 @@ class ItemPanel(QWidget):
                 box.setVisible(bool(items))
             self.title_box.setVisible(bool(items) and kinds == {"title"})
             has_video = "video" in kinds
-            for w in (self.start, self.start_label, self.audio):
+            for w in (self.start, self.start_label, self.audio, self.volume,
+                      self.volume_label):
                 w.setVisible(has_video)
+            self._load_sound()
             has_media = bool(kinds & {"photo", "video"})
             self.fit.setVisible(has_media)
             self.fit_label.setVisible(has_media)
@@ -413,7 +483,6 @@ class ItemPanel(QWidget):
             it = items[0]
             self.duration.setValue(it.duration or 0.0)
             self.start.setValue(it.start)
-            self.audio.setChecked(it.audio)
             self.fit.setCurrentIndex(max(0, self.fit.findData(it.fit)))
             self.transition.setCurrentIndex(max(0, self.transition.findData(it.transition)))
             self.transition_duration.setValue(it.transition_duration or 0.0)

@@ -195,6 +195,20 @@ def test_music_loops_fades_and_ducks(synthetic: Path, umlaut_dir: Path) -> None:
     assert build_music(p, total, [(5.0, 9.0)], umlaut_dir / "cache") == music
 
 
+def test_original_sound_per_clip(synthetic: Path, umlaut_dir: Path) -> None:
+    """Derselbe Clip dreimal: 100 %, 50 % und ohne Originalton. Jeder behält seinen Pegel."""
+    _copy_media(synthetic, umlaut_dir, "Video mit Ton.mp4")
+    clip = {"kind": "video", "path": "Video mit Ton.mp4", "duration": 2.0, "transition": "none"}
+    p = Project(items=[Item(**clip), Item(**clip, volume=0.5), Item(**clip, audio=False)],
+                base_dir=umlaut_dir)
+    out = umlaut_dir / "Originalton Ü.mp4"
+    render_project(p, RenderOptions(out, encoder="libx264", cache_dir=umlaut_dir / "cache"))
+    full, half, off = (_mean_volume(out, a + 0.3, a + 1.7, umlaut_dir) for a in (0.0, 2.0, 4.0))
+    assert full > -30.0  # Sinuston ist deutlich zu hören
+    assert 5.0 < full - half < 7.0  # 50 % entspricht etwa -6 dB
+    assert off < -70.0  # stumm
+
+
 def test_final_video_has_bt709_color_metadata(show: Project, umlaut_dir: Path) -> None:
     """Endvideo trägt bt709 ausdrücklich in den Metadaten, auch bei Quellen ohne Farbangaben
     (Fotos, Handyvideos mit "unknown")."""

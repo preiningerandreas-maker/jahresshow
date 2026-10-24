@@ -20,6 +20,7 @@ Schlankes Windows-Programm, das aus Fotos und Videos eine Slideshow mit eigener 
 7. Titelkarte am Anfang: Text auf Farbfläche oder auf Foto
 8. Übergänge: Crossfade (Standard) plus 3 Alternativen. Keine Animationen, kein Ken Burns in V1.
 9. Musik: Playlist aus lokalen Dateien (MP3, M4A, WAV, FLAC), Fade-out am Ende, Schleife falls zu kurz, Musik auf 25 % absenken während Clips mit Originalton
+   Originalton pro Video an/aus und Lautstärke 0–200 %. Lautsprecher-Symbol auf der Kachel schaltet nur diesen Clip um; bei gemischter Auswahl zeigt der Haken einen Strich. Videos ohne Tonspur: beim Import aus, Haken gesperrt.
 10. Projekt speichern/laden als JSON, Vorlage (Schrift, Übergang, Musikordner) für nächstes Jahr wiederverwendbar
 11. Vorschau eines gewählten Abschnitts in 480p
 12. Export MP4

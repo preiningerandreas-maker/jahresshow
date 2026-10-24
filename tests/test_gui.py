@@ -770,6 +770,206 @@ def test_tile_follows_fit_change(window: MainWindow, synthetic: Path, umlaut_dir
     assert window.model.tile(row).fit == "black"
 
 
+def sound_project(synthetic: Path, folder: Path) -> Project:
+    """Zwei Videos mit Ton (einer aus), ein Video ohne Tonspur, ein Foto."""
+    from make_media import _video
+
+    loud, quiet, photo = copy_media(synthetic, folder, "Video mit Ton.mp4",
+                                    "Hochkant Video.mp4", "Querformat Wörthersee.jpg")
+    silent = folder / "Ohne Ton.mp4"
+    _video(silent, (640, 360), 2, audio=False)
+    items = [Item("video", path=str(loud), taken="2026-03-01T10:00:00"),
+             Item("video", path=str(quiet), taken="2026-03-02T10:00:00", audio=False),
+             Item("video", path=str(silent), taken="2026-03-03T10:00:00"),
+             Item("photo", path=str(photo), taken="2026-03-04T10:00:00")]
+    return Project(name="Ton", items=items, base_dir=folder)
+
+
+def load_sound_project(qtbot, w: MainWindow, synthetic: Path, folder: Path) -> list[Item]:  # noqa: ANN001
+    w.set_project(sound_project(synthetic, folder), None)
+    items = [it for it in w.project.items if it.kind != "title"]  # ohne Zwischentitel
+    silent = Path(items[2].path or "")
+    # Tonspuren prüft die Daueranzeige im Hintergrund
+    qtbot.waitUntil(lambda: silent in w.model.silent, timeout=30_000)
+    return items
+
+
+def rows_of(w: MainWindow, *items: Item) -> list[int]:
+    return [w.project.items.index(it) for it in items]
+
+
+def test_sound_checkbox_mixed_selection_and_volume(qtbot, window: MainWindow,  # noqa: ANN001
+                                                   synthetic: Path, umlaut_dir: Path) -> None:
+    loud, quiet, silent, photo = load_sound_project(qtbot, window, synthetic, umlaut_dir)
+    panel = window.item_panel
+    assert window.model.silent == {Path(silent.path or "")}  # nur das Video ohne Tonspur
+
+    # Einer mit, einer ohne Ton: Strich statt Haken, keiner wird verändert
+    window.timeline.select_rows(rows_of(window, loud, quiet))
+    assert panel.audio.checkState() == Qt.CheckState.PartiallyChecked
+    assert (loud.audio, quiet.audio) == (True, False)
+    assert not panel.audio_note.isVisibleTo(window)
+    # Erster Klick: alle an, zweiter: alle aus
+    panel.audio.click()
+    assert panel.audio.checkState() == Qt.CheckState.Checked
+    assert (loud.audio, quiet.audio) == (True, True)
+    panel.audio.click()
+    assert (loud.audio, quiet.audio) == (False, False)
+    assert not panel.volume.isEnabled()  # ohne Ton nichts einzustellen
+    panel.audio.click()
+    assert panel.volume.isEnabled()
+
+    # Einzeln: Haken und Lautstärke gelten nur für dieses Video
+    window.timeline.select_rows(rows_of(window, quiet))
+    assert panel.audio.checkState() == Qt.CheckState.Checked and not panel.audio.isTristate()
+    panel.audio.click()
+    panel.audio.click()
+    panel.volume.setValue(150)
+    assert (quiet.audio, quiet.volume) == (True, 1.5)
+    assert (loud.audio, loud.volume) == (True, 1.0)
+    window.timeline.select_rows(rows_of(window, loud))
+    assert panel.volume.value() == 100
+    assert "an, 100 %" in window.model.tooltip(loud)
+    assert "an, 150 %" in window.model.tooltip(quiet)
+    assert window.dirty
+
+
+def test_video_without_sound_track(qtbot, window: MainWindow, synthetic: Path,  # noqa: ANN001
+                                   umlaut_dir: Path) -> None:
+    from slideshow.app.timeline import NO_TRACK_TEXT, SOUND_NONE
+
+    loud, _quiet, silent, photo = load_sound_project(qtbot, window, synthetic, umlaut_dir)
+    panel = window.item_panel
+    (row,) = rows_of(window, silent)
+    assert window.model.tile(row).sound == SOUND_NONE
+    assert NO_TRACK_TEXT in window.model.tooltip(silent)
+
+    window.timeline.select_rows([row])
+    assert not panel.audio.isEnabled() and not panel.volume.isEnabled()
+    assert panel.audio_note.isVisibleTo(window)
+    assert panel.audio_note.text() == "Dieses Video hat keinen Ton."
+
+    # Gemischt mit einem Video mit Ton (und einem Foto): nur das Video mit Ton ändert sich
+    window.timeline.select_rows(rows_of(window, loud, silent, photo))
+    assert panel.audio.isEnabled()
+    assert panel.audio_note.text() == ("1 der 2 markierten Videos haben keinen Ton, für sie "
+                                       "ändert sich nichts.")
+    silent_before = (silent.audio, silent.volume)
+    panel.audio.click()
+    panel.audio.click()
+    panel.volume.setValue(50)
+    assert (loud.audio, loud.volume) == (True, 0.5)
+    assert (silent.audio, silent.volume) == silent_before
+    assert photo.volume == 1.0
+
+
+def test_import_marks_video_without_sound(qtbot, window: MainWindow,  # noqa: ANN001
+                                          umlaut_dir: Path, synthetic: Path) -> None:
+    from make_media import _video
+
+    from slideshow.app.timeline import SOUND_NONE, SOUND_ON
+
+    copy_media(synthetic, umlaut_dir, "Video mit Ton.mp4")
+    _video(umlaut_dir / "Ohne Ton.mp4", (640, 360), 2, audio=False)
+    wait_import(qtbot, window, [umlaut_dir])
+    by_name = {Path(it.path).name: (i, it) for i, it in enumerate(window.project.items)
+               if it.path}
+    row, item = by_name["Ohne Ton.mp4"]
+    assert not item.audio  # schon beim Import aus, ohne auf die Prüfung zu warten
+    assert window.model.tile(row).sound == SOUND_NONE
+    row, item = by_name["Video mit Ton.mp4"]
+    assert item.audio and window.model.tile(row).sound == SOUND_ON
+
+
+def test_speaker_click_toggles_only_that_clip(qtbot, window: MainWindow,  # noqa: ANN001
+                                              synthetic: Path, umlaut_dir: Path) -> None:
+    from slideshow.app.timeline import SOUND_OFF, SOUND_ON, TileDelegate
+
+    loud, quiet, silent, photo = load_sound_project(qtbot, window, synthetic, umlaut_dir)
+    view, model = window.timeline, window.model
+    delegate = view.itemDelegate()
+    assert isinstance(delegate, TileDelegate)
+    window.timeline.select_rows(rows_of(window, photo))
+    window.dirty = False
+
+    def click_speaker(item: Item) -> None:
+        index = model.index(window.project.items.index(item))
+        view.scrollTo(index)
+        pos = delegate.sound_rect(view.visualRect(index)).center()
+        assert view.sound_hit(pos) == index.row()
+        qtbot.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=pos)
+
+    click_speaker(loud)
+    assert (loud.audio, quiet.audio) == (False, False)
+    assert model.tile(window.project.items.index(loud)).sound == SOUND_OFF
+    assert window.selected_items() == [photo]  # Auswahl bleibt
+    assert window.dirty
+    click_speaker(quiet)
+    assert quiet.audio and model.tile(window.project.items.index(quiet)).sound == SOUND_ON
+
+    # Lautstärke 0 zählt als stumm; einschalten setzt sie zurück auf 100 %
+    quiet.audio, quiet.volume = False, 0.0
+    model.refresh_rows(None)
+    click_speaker(quiet)
+    assert (quiet.audio, quiet.volume) == (True, 1.0)
+
+    # Ausgewähltes Video: die Eigenschaften folgen dem Klick
+    window.timeline.select_rows(rows_of(window, loud))
+    click_speaker(loud)
+    assert window.item_panel.audio.isChecked() and loud.audio
+
+    # Ohne Tonspur: nichts ändert sich, Hinweis in der Statusleiste
+    before = silent.audio
+    click_speaker(silent)
+    assert silent.audio == before
+    assert "keinen Ton" in window.statusBar().currentMessage()
+
+    # Klick daneben (Bildmitte) wählt wie gewohnt aus, ohne den Ton zu ändern
+    index = model.index(window.project.items.index(quiet))
+    qtbot.mouseClick(view.viewport(), Qt.MouseButton.LeftButton,
+                     pos=delegate.thumb_rect(view.visualRect(index)).center())
+    assert window.selected_items() == [quiet] and quiet.audio
+
+
+def test_speaker_badge_drawn_per_sound_state(qtbot) -> None:  # noqa: ANN001
+    from PySide6.QtCore import QRect
+    from PySide6.QtWidgets import QStyleOptionViewItem
+
+    from slideshow.app.timeline import TileDelegate, TimelineModel, TimelineView
+
+    p = Project(items=[Item("video", path="an.mp4"), Item("video", path="aus.mp4", audio=False),
+                       Item("video", path="stumm.mp4"), Item("photo", path="foto.jpg")])
+    model = TimelineModel(p, None)
+    model.silent = {p.resolve("stumm.mp4")}
+    assert [model.tile(i).sound for i in range(4)] == ["on", "off", "none", ""]
+    view = TimelineView()
+    qtbot.addWidget(view)
+    view.setModel(model)
+    delegate = view.itemDelegate()
+    assert isinstance(delegate, TileDelegate)
+
+    def badge(row: int) -> QImage:
+        idx = model.index(row)
+        size = delegate.sizeHint(QStyleOptionViewItem(), idx)
+        img = QImage(size, QImage.Format.Format_RGB32)
+        img.fill(0)
+        opt = QStyleOptionViewItem()
+        view.initViewItemOption(opt)
+        opt.rect = QRect(0, 0, size.width(), size.height())
+        from PySide6.QtGui import QPainter
+
+        painter = QPainter(img)
+        delegate.paint(painter, opt, idx)
+        painter.end()
+        return img.copy(delegate.sound_rect(opt.rect))
+
+    on, off, none, photo = (badge(i) for i in range(4))
+    assert on != off and off != none and on != none  # drei verschiedene Symbole
+    # Fotos haben kein Symbol: dort nur die einfarbige Fläche ohne Vorschaubild
+    colours = {photo.pixel(x, y) for x in range(photo.width()) for y in range(photo.height())}
+    assert len(colours) == 1
+
+
 def test_zoom_slider_and_ctrl_wheel(qtbot, window: MainWindow, synthetic: Path,  # noqa: ANN001
                                     umlaut_dir: Path) -> None:
     from PySide6.QtCore import QPointF

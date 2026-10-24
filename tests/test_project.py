@@ -77,6 +77,8 @@ def test_unknown_fields_ignored(tmp_path: Path) -> None:
         {"kind": "photo", "path": "a.jpg", "fit": "stretch"},
         {"kind": "photo", "path": "a.jpg", "transition": "spin"},
         {"kind": "photo", "path": "a.jpg", "duration": 0},
+        {"kind": "video", "path": "a.mp4", "volume": -0.1},
+        {"kind": "video", "path": "a.mp4", "volume": 2.5},
         {"kind": "title", "text": {"text": "x", "position": "left"}},
     ],
 )

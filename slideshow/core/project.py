@@ -21,6 +21,7 @@ TRANSITIONS = ("fade", "fadeblack", "wipeleft", "slideleft", "none")
 POSITIONS = ("top", "center", "bottom")
 RESOLUTIONS = {"1080p": (1920, 1080), "2160p": (3840, 2160)}
 PREVIEW_SIZE = (854, 480)
+MAX_VOLUME = 2.0  # Originalton höchstens doppelt so laut
 # Beschädigte Bilder: „trotzdem verwenden“ nur, wenn mindestens dieser Anteil lesbar ist
 DAMAGE_USABLE_MIN = 0.8
 # Ab diesem Anteil gilt ein Bild als nur leicht beschädigt und wird automatisch verwendet
@@ -76,7 +77,7 @@ class Item:
     transition_duration: float | None = None
     background: str = "#1E2A3A"  # Titelkarte ohne Foto
     audio: bool = True  # Originalton eines Videos verwenden
-    volume: float = 1.0
+    volume: float = 1.0  # Lautstärke des Originaltons, 1.0 = unverändert
     chapter: str | None = None  # Kapitel "JJJJ-MM"; Titel mit Kapitel = Zwischentitel
     taken: str | None = None  # Aufnahmedatum ISO 8601, für die Kapitel
     damage: str | None = None  # Bilddaten beschädigt (Grund); None = in Ordnung
@@ -119,6 +120,8 @@ class Item:
             raise ValueError(f"Unbekannter Übergang: {self.transition!r}")
         if self.duration is not None and self.duration <= 0:
             raise ValueError("Anzeigedauer muss größer als 0 sein")
+        if not 0.0 <= self.volume <= MAX_VOLUME:
+            raise ValueError(f"Lautstärke muss zwischen 0 und {MAX_VOLUME * 100:.0f} % liegen")
         if self.text is not None:
             self.text.validate()
 

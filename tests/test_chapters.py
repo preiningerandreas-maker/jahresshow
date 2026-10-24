@@ -29,6 +29,18 @@ def _summary(items: list[Item]) -> list[str]:
 # --- (6) Kapitel pro Monat mit korrekten Zwischentiteln ---------------------------------
 
 
+def test_video_without_sound_track_imports_with_sound_off() -> None:
+    from dataclasses import replace
+
+    from slideshow.core.chapters import media_items
+
+    taken = datetime(2026, 5, 1, 10, 0)
+    with_sound = replace(_media("Ton.mp4", taken, "video"), has_audio=True)
+    silent = _media("Stumm.mp4", taken, "video")
+    photo = _media("Foto.jpg", taken)
+    assert [it.audio for it in media_items([with_sound, silent, photo])] == [True, False, True]
+
+
 def test_month_titles_german() -> None:
     assert [chapter_title(f"2026-{m:02d}") for m in range(1, 13)] == [
         f"{name} 2026" for name in MONTHS]
