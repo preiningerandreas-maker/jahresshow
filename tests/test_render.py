@@ -209,6 +209,27 @@ def test_original_sound_per_clip(synthetic: Path, umlaut_dir: Path) -> None:
     assert off < -70.0  # stumm
 
 
+def test_blocks_with_and_without_original_sound(synthetic: Path, umlaut_dir: Path) -> None:
+    """Ein Abschnitt nur mit Fotos (stumm), einer mit Originalton, einer mit lauterem Ton:
+    alle Zwischendateien haben dasselbe Tonformat, sonst bricht das Zusammensetzen ab
+    („switching bps mid-stream is not supported“)."""
+    _copy_media(synthetic, umlaut_dir, "Querformat Wörthersee.jpg", "Video mit Ton.mp4")
+    photo = {"kind": "photo", "path": "Querformat Wörthersee.jpg", "duration": 1.0}
+    clip = {"kind": "video", "path": "Video mit Ton.mp4", "duration": 1.5}
+    p = Project(items=[Item(**photo), Item(**photo), Item(**clip), Item(**clip, volume=1.5),
+                       Item(**photo), Item(**clip, audio=False)], base_dir=umlaut_dir)
+    out = umlaut_dir / "Abschnitte Ü.mp4"
+    cache = umlaut_dir / "cache"
+    render_project(p, RenderOptions(out, encoder="libx264", cache_dir=cache, max_block=2))
+    _, a, _ = _streams(out)
+    assert abs(float(a["duration"]) - p.total_frames(clip_length) / FPS) < 0.1
+    loud = _mean_volume(out, 2.3, 3.3, umlaut_dir)
+    assert loud > -30.0 and _mean_volume(out, 0.2, 0.8, umlaut_dir) < -70.0
+    parts = [*cache.glob("segments*/*.mp4"), *(cache / "blocks").glob("*.mp4")]
+    assert len(parts) > 6
+    assert {_streams(f)[1]["sample_fmt"] for f in parts} == {"s16"}
+
+
 def test_final_video_has_bt709_color_metadata(show: Project, umlaut_dir: Path) -> None:
     """Endvideo trägt bt709 ausdrücklich in den Metadaten, auch bei Quellen ohne Farbangaben
     (Fotos, Handyvideos mit "unknown")."""
