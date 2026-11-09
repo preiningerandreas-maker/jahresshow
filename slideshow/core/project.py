@@ -169,6 +169,23 @@ class Music:
     volume: float = 1.0
     duck_volume: float = 0.25  # Musiklautstärke während Clips mit Originalton
     fade_out: float = 3.0
+    # Ausschnitt pro Musikstück: Pfad wie in "tracks" -> [Start, Ende] in Sekunden.
+    # Ende None = bis zum Ende der Datei. Stücke ohne Eintrag laufen ganz.
+    trims: dict[str, list[float | None]] = field(default_factory=dict)
+
+    def trim_of(self, track: str) -> tuple[float, float | None]:
+        start, end = self.trims.get(track) or (0.0, None)
+        return float(start or 0.0), (None if end is None else float(end))
+
+    def validate(self) -> None:
+        for track, trim in self.trims.items():
+            if len(trim) != 2:
+                raise ValueError(f"Musikausschnitt braucht Start und Ende: {track!r}")
+            start, end = self.trim_of(track)
+            if start < 0:
+                raise ValueError("Musikausschnitt: Start darf nicht negativ sein")
+            if end is not None and end <= start:
+                raise ValueError("Musikausschnitt: Ende muss nach dem Start liegen")
 
 
 @dataclass
@@ -209,6 +226,7 @@ class Project:
 
     def validate(self) -> None:
         self.settings.validate()
+        self.music.validate()
         for i, item in enumerate(self.items, start=1):
             try:
                 item.validate()
@@ -276,6 +294,7 @@ class Project:
             items.append(d)
         music = asdict(self.music)
         music["tracks"] = [rel(t) for t in self.music.tracks]
+        music["trims"] = {rel(t): v for t, v in self.music.trims.items()}
         return {
             "schema_version": self.schema_version,
             "name": self.name,

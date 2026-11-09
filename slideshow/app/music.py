@@ -8,6 +8,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QDoubleSpinBox,
     QFileDialog,
     QGridLayout,
     QGroupBox,
@@ -31,6 +32,18 @@ def audio_length(path: Path) -> float | None:
         return float(probe(path).get("format", {}).get("duration") or 0) or None
     except (FFmpegError, OSError, ValueError):
         return None
+
+
+MIN_TRIM = 0.5  # kürzester Ausschnitt in Sekunden
+
+
+def trim_text(start: float, end: float | None) -> str:
+    """„0:10 bis 2:30“, „ab 0:10“ oder „bis 2:30“."""
+    if end is None:
+        return f"ab {format_minutes(start)}"
+    if start <= 0:
+        return f"bis {format_minutes(end)}"
+    return f"{format_minutes(start)} bis {format_minutes(end)}"
 
 
 def format_minutes(seconds: float) -> str:
@@ -74,6 +87,29 @@ class MusicPanel(QWidget):
         lay.addWidget(self.summary)
         outer.addWidget(box, 1)
 
+        tbox = QGroupBox("Ausschnitt des markierten Stücks")
+        tform = form_layout(tbox)
+        self.trim_start = QDoubleSpinBox()
+        self.trim_start.setDecimals(1)
+        self.trim_start.setSingleStep(1.0)
+        self.trim_start.setSuffix(" s")
+        self.trim_start.setKeyboardTracking(False)
+        self.trim_start.setToolTip("Das Stück beginnt erst an dieser Stelle (in Sekunden)")
+        tform.addRow("Start", self.trim_start)
+        self.trim_end = QDoubleSpinBox()
+        self.trim_end.setDecimals(1)
+        self.trim_end.setSingleStep(1.0)
+        self.trim_end.setSuffix(" s")
+        self.trim_end.setSpecialValueText("Ende der Datei")
+        self.trim_end.setKeyboardTracking(False)
+        self.trim_end.setToolTip("Das Stück endet an dieser Stelle (in Sekunden), "
+                                 "0 = bis zum Ende der Datei")
+        tform.addRow("Ende", self.trim_end)
+        self.trim_reset = QPushButton("Ganzes Stück")
+        tform.addRow(self.trim_reset)
+        self.trim_box = tbox
+        outer.addWidget(tbox)
+
         sbox = QGroupBox("Lautstärke")
         form = form_layout(sbox)
         self.volume = QSpinBox()
@@ -102,6 +138,11 @@ class MusicPanel(QWidget):
         self.volume.valueChanged.connect(lambda v: self._set("volume", v / 100))
         self.duck.valueChanged.connect(lambda v: self._set("duck_volume", v / 100))
         self.fade.valueChanged.connect(lambda v: self._set("fade_out", float(v)))
+        self.list.itemSelectionChanged.connect(self._load_trim)
+        self.trim_start.valueChanged.connect(self._on_trim)
+        self.trim_end.valueChanged.connect(self._on_trim)
+        self.trim_reset.clicked.connect(self._reset_trim)
+        self._load_trim()
 
     def set_project(self, project: Project) -> None:
         self.project = project
@@ -125,8 +166,80 @@ class MusicPanel(QWidget):
             item.setToolTip(str(path) if path.is_file() else f"{path}\n(Datei fehlt!)")
             if not path.is_file():
                 item.setText(f"{path.name} (fehlt)")
+            start, end = self.project.music.trim_of(t)
+            if (start, end) != (0.0, None):
+                item.setText(f"{item.text()}  [{trim_text(start, end)}]")
             self.list.addItem(item)
         self._update_summary()
+        self._load_trim()
+
+    def _selected_track(self) -> str | None:
+        """Das eine markierte Stück; bei keinem oder mehreren None."""
+        rows = {self.list.row(i) for i in self.list.selectedItems()}
+        if self.project is None or len(rows) != 1:
+            return None
+        row = next(iter(rows))
+        tracks = self.project.music.tracks
+        return tracks[row] if 0 <= row < len(tracks) else None
+
+    def _track_length(self, track: str) -> float | None:
+        assert self.project is not None
+        p = self.project.resolve(track)
+        if p not in self._lengths:
+            self._lengths[p] = audio_length(p) if p.is_file() else None
+        return self._lengths[p]
+
+    def _load_trim(self) -> None:
+        track = self._selected_track()
+        self.trim_box.setEnabled(track is not None)
+        was = self._loading
+        self._loading = True
+        try:
+            if track is None or self.project is None:
+                self.trim_start.setValue(0.0)
+                self.trim_end.setValue(0.0)
+                return
+            length = self._track_length(track)
+            top = length if length else 36000.0
+            self.trim_start.setRange(0.0, top)
+            self.trim_end.setRange(0.0, top)
+            start, end = self.project.music.trim_of(track)
+            self.trim_start.setValue(start)
+            self.trim_end.setValue(end or 0.0)
+        finally:
+            self._loading = was
+
+    def _on_trim(self) -> None:
+        track = self._selected_track()
+        if self._loading or track is None or self.project is None:
+            return
+        start, end = self.trim_start.value(), self.trim_end.value()
+        length = self._track_length(track)
+        if end > 0 and end <= start:
+            end = min(start + MIN_TRIM, length) if length else start + MIN_TRIM
+        if length and end >= length - 0.05:
+            end = 0.0  # bis zum Ende der Datei
+        if length and start > length - MIN_TRIM:
+            start = max(0.0, length - MIN_TRIM)
+        music = self.project.music
+        if start <= 0 and end <= 0:
+            music.trims.pop(track, None)
+        else:
+            music.trims[track] = [start, end or None]
+        row = self.list.currentRow()
+        self._fill()
+        self.list.setCurrentRow(row)
+        self.changed.emit()
+
+    def _reset_trim(self) -> None:
+        track = self._selected_track()
+        if track is None or self.project is None:
+            return
+        self.project.music.trims.pop(track, None)
+        row = self.list.currentRow()
+        self._fill()
+        self.list.setCurrentRow(row)
+        self.changed.emit()
 
     def _set(self, field: str, value: float) -> None:
         if self._loading or self.project is None:
@@ -155,7 +268,9 @@ class MusicPanel(QWidget):
             return
         rows = sorted({self.list.row(i) for i in self.list.selectedItems()}, reverse=True)
         for r in rows:
-            del self.project.music.tracks[r]
+            track = self.project.music.tracks.pop(r)
+            if track not in self.project.music.tracks:
+                self.project.music.trims.pop(track, None)
         if rows:
             self._fill()
             self.changed.emit()
@@ -192,10 +307,9 @@ class MusicPanel(QWidget):
             return
         total = 0.0
         for t in self.project.music.tracks:
-            p = self.project.resolve(t)
-            if p not in self._lengths:
-                self._lengths[p] = audio_length(p) if p.is_file() else None
-            total += self._lengths[p] or 0.0
+            length = self._track_length(t) or 0.0
+            start, end = self.project.music.trim_of(t)
+            total += max(0.0, min(end if end is not None else length, length) - start)
         text = f"Musik insgesamt {format_minutes(total)}"
         if self._show_seconds:
             text += f", Show {format_minutes(self._show_seconds)}"
