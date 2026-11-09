@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from slideshow.app.cropdialog import CropDialog
+from slideshow.app.positionpad import PositionPad
 from slideshow.core.chapters import chapter_title, is_chapter_title
 from slideshow.core.importer import PHOTO_EXTS, DamagedFile, describe_file, open_photo
 from slideshow.core.photoedit import rotate_crop, rotate_image
@@ -50,6 +51,10 @@ TRANSITION_LABELS = {
     "none": "Harter Schnitt",
 }
 POSITION_LABELS = {"top": "Oben", "center": "Mitte", "bottom": "Unten"}
+FREE_POSITION = "free"
+FREE_LABEL = "Frei (mit Kreuz)"
+# Wo die Voreinstellungen den Textblock ungefähr hinsetzen (Anzeige im Kreuz-Feld)
+PRESET_POINTS = {"top": (0.5, 0.12), "center": (0.5, 0.5), "bottom": (0.5, 0.88)}
 BUNDLED_FONT = "Noto Sans"
 OTHER_FONT = "Andere Schrift wählen …"
 DEFAULT_TEXT = TextOverlay("")
@@ -240,7 +245,10 @@ class ItemPanel(QWidget):
         self.position = combo()
         for key, label in POSITION_LABELS.items():
             self.position.addItem(label, key)
+        self.position.addItem(FREE_LABEL, FREE_POSITION)
         xform.addRow("Position", self.position)
+        self.pad = PositionPad()
+        xform.addRow(self.pad)
         self.font_combo = combo()
         self.font_combo.addItem(BUNDLED_FONT, BUNDLED_FONT)
         self.font_combo.addItem(OTHER_FONT, None)
@@ -307,8 +315,8 @@ class ItemPanel(QWidget):
         self.bg_clear.clicked.connect(
             lambda: self._apply(lambda it: setattr(it, "path", None), kinds=("title",)))
         self.text.textChanged.connect(self._on_text)
-        self.position.currentIndexChanged.connect(
-            lambda _i: self._apply_text("position", self.position.currentData()))
+        self.position.currentIndexChanged.connect(self._on_position)
+        self.pad.moved.connect(self._on_pad)
         self.font_combo.activated.connect(self._on_font)
         self.size.valueChanged.connect(lambda v: self._apply_text("size", v))
         self.bold.toggled.connect(lambda v: self._apply_text("bold", v))
@@ -432,11 +440,52 @@ class ItemPanel(QWidget):
             first = self.items[0].text if self.items and self.items[0].text else DEFAULT_TEXT
             it.text = TextOverlay("", first.position, first.font, first.size, first.color,
                                   first.bold, first.bar, first.bar_color, first.bar_opacity,
-                                  first.fade)
+                                  first.fade, first.x, first.y)
         return it.text
 
     def _apply_text(self, field: str, value: object) -> None:
         self._apply(lambda it: setattr(self._overlay(it), field, value))
+
+    def _on_position(self, _index: int) -> None:
+        """Voreinstellung oder „Frei“: Frei startet dort, wo der Text gerade sitzt."""
+        if self._loading:
+            return
+        key = self.position.currentData()
+        if key == FREE_POSITION:
+            def free(it: Item) -> None:
+                ov = self._overlay(it)
+                if not ov.free:
+                    ov.x, ov.y = PRESET_POINTS[ov.position]
+            self._apply(free)
+        else:
+            def preset(it: Item) -> None:
+                ov = self._overlay(it)
+                ov.position, ov.x, ov.y = key, None, None
+            self._apply(preset)
+        self._load_position()
+
+    def _on_pad(self, x: float, y: float) -> None:
+        """Kreuz bewegt: Text frei positionieren (die Auswahl springt auf „Frei“)."""
+        def move(it: Item) -> None:
+            ov = self._overlay(it)
+            ov.x, ov.y = x, y
+        self._apply(move)
+        self._load_position()
+
+    def _load_position(self) -> None:
+        ov = self.items[0].text if self.items and self.items[0].text else DEFAULT_TEXT
+        was = self._loading
+        self._loading = True
+        try:
+            if ov.free:
+                assert ov.x is not None and ov.y is not None
+                self.position.setCurrentIndex(self.position.findData(FREE_POSITION))
+                self.pad.set_point(ov.x, ov.y, free=True)
+            else:
+                self.position.setCurrentIndex(max(0, self.position.findData(ov.position)))
+                self.pad.set_point(*PRESET_POINTS[ov.position], free=False)
+        finally:
+            self._loading = was
 
     def _on_text(self) -> None:
         text = self.text.toPlainText()
@@ -531,7 +580,7 @@ class ItemPanel(QWidget):
             ov = it.text or DEFAULT_TEXT
             if self.text.toPlainText() != ov.text:
                 self.text.setPlainText(ov.text)
-            self.position.setCurrentIndex(max(0, self.position.findData(ov.position)))
+            self._load_position()
             font_idx = self.font_combo.findData(ov.font)
             if font_idx < 0:
                 self.font_combo.insertItem(self.font_combo.count() - 1, Path(ov.font).stem,
