@@ -12,6 +12,7 @@ from PIL import Image
 from slideshow.core.ffmpeg import ProgressCallback, run_ffmpeg
 from slideshow.core.importer import open_photo, video_info
 from slideshow.core.normalize import cached_normalized, normalize_video, to_bt709_scale
+from slideshow.core.photoedit import apply_crop, draft_size
 from slideshow.core.project import FPS, Item, Project, TimelineEntry
 from slideshow.render.cache import (
     cleanup_tmp,
@@ -92,6 +93,9 @@ def _item_settings(item: Item) -> dict:
     for k in ("transition", "transition_duration", "duration", "chapter", "taken", "path",
               "damage", "damage_readable"):
         d.pop(k, None)
+    # Neue Felder nur im Schlüssel, wenn gesetzt: Segmente aus früheren Versionen bleiben gültig
+    if d.get("crop") is None:
+        d.pop("crop", None)
     return d
 
 
@@ -125,11 +129,14 @@ def still_key(project: Project, item: Item, w: int, h: int, cache_dir: Path) -> 
 
 
 def prepare_photo(src: Path, w: int, h: int, out: Path, *, fast: bool = False,
-                  tolerant: bool = False) -> Path:
-    """Foto (auch HEIC) laden, EXIF-Drehung anwenden, auf nötige Größe verkleinern, als PNG.
+                  tolerant: bool = False, crop: list[float] | None = None) -> Path:
+    """Foto (auch HEIC) laden, EXIF-Drehung und Bildausschnitt anwenden, auf nötige Größe
+    verkleinern, als PNG.
     fast: JPEG gleich verkleinert dekodieren (Vorschau; deutlich schneller bei 12 MP).
-    tolerant: beschädigtes Bild mit seinem lesbaren Teil verwenden."""
-    img = open_photo(src, draft=(w, h) if fast else None, tolerant=tolerant)
+    tolerant: beschädigtes Bild mit seinem lesbaren Teil verwenden.
+    crop: fixer Ausschnitt [links, oben, Breite, Höhe] in Anteilen des gedrehten Bildes."""
+    img = open_photo(src, draft=draft_size(w, h, crop) if fast else None, tolerant=tolerant)
+    img = apply_crop(img, crop)
     factor = max(w / img.width, h / img.height)  # Größe, die den Rahmen füllend abdeckt
     if factor < 1:
         size = (max(2, round(img.width * factor)), max(2, round(img.height * factor)))
@@ -186,7 +193,8 @@ def build_picture(project: Project, item: Item, w: int, h: int, cache_dir: Path,
         else:
             assert item.path is not None
             prepare_photo(project.resolve(item.path), w, h, pre, fast=fast,
-                          tolerant=item.tolerant_load)
+                          tolerant=item.tolerant_load,
+                          crop=item.crop if item.kind == "photo" else None)
             fit = item.fit
         work.append(pre)
         args += ["-framerate", str(FPS), "-i", str(pre)]
