@@ -19,6 +19,7 @@ FIT_MODES = ("blur", "black", "crop")
 # slideleft = Schieben, none = harter Schnitt
 TRANSITIONS = ("fade", "fadeblack", "wipeleft", "slideleft", "none")
 POSITIONS = ("top", "center", "bottom")
+MAX_TEXT_FADE = 2.0
 ROTATIONS = (0, 90, 180, 270)
 RESOLUTIONS = {"1080p": (1920, 1080), "2160p": (3840, 2160)}
 PREVIEW_SIZE = (854, 480)
@@ -65,8 +66,12 @@ class TextOverlay:
     bar: bool = True  # halbtransparenter Balken hinter dem Text
     bar_color: str = "#000000"
     bar_opacity: float = 0.5
+    # Sekunden für sanftes Ein- und Ausblenden des Textes; 0 = Text steht die ganze Zeit
+    fade: float = 0.5
 
     def validate(self) -> None:
+        if not 0.0 <= self.fade <= MAX_TEXT_FADE:
+            raise ValueError(f"Ein-/Ausblenden muss zwischen 0 und {MAX_TEXT_FADE} s liegen")
         if self.position not in POSITIONS:
             raise ValueError(f"Unbekannte Textposition: {self.position!r}")
         if not 0.0 <= self.bar_opacity <= 1.0:

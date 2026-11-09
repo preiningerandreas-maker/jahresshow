@@ -39,7 +39,7 @@ def test_still_matches_export_segment(fit: str, synthetic: Path, umlaut_dir: Pat
     shutil.copy2(synthetic / src.name, src)
     item = Item("photo", path=str(src), duration=1.0, fit=fit,
                 text=TextOverlay("Grüße aus Kärnten – ß", color="#FFE08A", bar_color="#203040",
-                                 bar_opacity=0.7))
+                                 bar_opacity=0.7, fade=0.0))
     project = Project(items=[item], base_dir=umlaut_dir)
     cache = tmp_path / "cache"
 
@@ -59,7 +59,7 @@ def test_still_of_converted_video_matches_export(synthetic: Path, umlaut_dir: Pa
     cache = tmp_path / "cache"
     normalize_video(src, cache)
     item = Item("video", path=str(src), duration=1.0, start=0.5,
-                text=TextOverlay("Urlaub", position="top"))
+                text=TextOverlay("Urlaub", position="top", fade=0.0))
     project = Project(items=[item], base_dir=umlaut_dir)
     still = render_still(project, item, W, H, tmp_path / "still.png", cache)
     entry = project.timeline(lambda _p: 1.0)[0]

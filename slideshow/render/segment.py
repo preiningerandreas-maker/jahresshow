@@ -13,7 +13,7 @@ from slideshow.core.ffmpeg import ProgressCallback, run_ffmpeg
 from slideshow.core.importer import open_photo, video_info
 from slideshow.core.normalize import cached_normalized, normalize_video, to_bt709_scale
 from slideshow.core.photoedit import apply_crop, draft_size, rotate_image
-from slideshow.core.project import FPS, Item, Project, TimelineEntry
+from slideshow.core.project import FPS, Item, Project, TextOverlay, TimelineEntry
 from slideshow.render.cache import (
     cleanup_tmp,
     commit_tmp,
@@ -159,12 +159,26 @@ class Picture:
     last: str  # Name des letzten Ausgangs im Graphen
     work: list[Path] = field(default_factory=list)  # Arbeitsdateien, danach löschen
     has_audio: bool = False
+    # Standbild schon auf die Segmentlänge wiederholt (nötig, wenn der Text überblendet)
+    looped: bool = False
+
+
+def text_fade_seconds(overlay: TextOverlay, frames: int | None) -> float:
+    """Dauer der Ein- und Ausblendung des Textes in Sekunden, 0 = keine. Nur bei bekannter
+    Segmentlänge (Export, Vorschau); höchstens die halbe Länge, damit sich beide nie
+    überlappen, und mindestens ein Bild."""
+    if frames is None or overlay.fade <= 0:
+        return 0.0
+    seconds = min(overlay.fade, frames / FPS / 2)
+    return seconds if seconds * FPS >= 1 else 0.0
 
 
 def build_picture(project: Project, item: Item, w: int, h: int, cache_dir: Path,
-                  work_base: Path, *, fast: bool = False) -> Picture:
+                  work_base: Path, *, fast: bool = False, frames: int | None = None) -> Picture:
     """work_base: Pfad ohne Endung für Arbeitsdateien (bekommen eindeutige Namen).
-    fast: Fotos beschleunigt verkleinert laden (nur für Vorschauen)."""
+    fast: Fotos beschleunigt verkleinert laden (nur für Vorschauen).
+    frames: Länge des Segments; nur damit blendet der Text ein und aus (das Standbild der
+    Vorschau zeigt den Text immer ganz)."""
     work: list[Path] = []
     args: list[str] = []
     graph: list[str] = []
@@ -211,12 +225,35 @@ def build_picture(project: Project, item: Item, w: int, h: int, cache_dir: Path,
     # Erst Bild und Text getrennt nach bt709 YUV, dann in YUV überblenden
     graph.append(f"[fit]{to_bt709(assume_bt709)}[base]")
     last = "base"
+    looped = False
     if text_png is not None:
-        args += ["-i", str(text_png)]
-        graph.append(f"[1:v]{TEXT_TO_YUV}[text]")
+        assert item.text is not None
+        fade = text_fade_seconds(item.text, frames)
+        if fade > 0:
+            assert frames is not None
+            seconds = frames / FPS
+            if item.kind != "video":
+                # Das Standbild (Unschärfe usw. nur einmal berechnet) jetzt auf die Länge
+                # bringen: der Text bewegt sich und braucht in jedem Bild eine Unterlage
+                graph.append(f"[{last}]loop=loop={frames - 1}:size=1:start=0,"
+                             f"settb=1/{FPS},setpts=N[looped]")
+                last = "looped"
+                looped = True
+            args += ["-loop", "1", "-framerate", str(FPS), "-t", f"{seconds:.6f}",
+                     "-i", str(text_png)]
+            # Die Ausblendung endet mit dem letzten Bild: dort ist der Text ganz weg
+            out_start = max(fade, seconds - fade - 1 / FPS)
+            graph.append(
+                f"[1:v]{TEXT_TO_YUV},"
+                f"fade=t=in:st=0:d={fade:.6f}:alpha=1,"
+                f"fade=t=out:st={out_start:.6f}:d={fade:.6f}:alpha=1[text]"
+            )
+        else:
+            args += ["-i", str(text_png)]
+            graph.append(f"[1:v]{TEXT_TO_YUV}[text]")
         graph.append(f"[{last}][text]overlay=0:0:format=yuv420[txt]")
         last = "txt"
-    return Picture(args, graph, last, work, has_audio)
+    return Picture(args, graph, last, work, has_audio, looped)
 
 
 def render_still(project: Project, item: Item, w: int, h: int, out: Path, cache_dir: Path,
@@ -268,7 +305,7 @@ def render_segment(
     seconds = f"{n / FPS:.6f}"
     samples = n * SAMPLES_PER_FRAME
     pic = build_picture(project, item, cfg.width, cfg.height, cfg.cache_dir,
-                        cfg.work_dir / key)
+                        cfg.work_dir / key, frames=n)
     args, graph, last, work = pic.args, pic.graph, pic.last, pic.work
     has_audio = pic.has_audio
 
@@ -278,6 +315,8 @@ def render_segment(
             f"[{last}]tpad=stop_mode=clone:stop_duration={seconds},"
             f"trim=end_frame={n},settb=1/{FPS},setpts=N[v]"
         )
+    elif pic.looped:
+        graph.append(f"[{last}]trim=end_frame={n},settb=1/{FPS},setpts=N[v]")
     else:
         # Standbild nur einmal berechnen und dann wiederholen
         graph.append(

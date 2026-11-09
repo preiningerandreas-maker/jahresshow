@@ -31,7 +31,7 @@ from slideshow.app.cropdialog import CropDialog
 from slideshow.core.chapters import chapter_title, is_chapter_title
 from slideshow.core.importer import PHOTO_EXTS, DamagedFile, describe_file, open_photo
 from slideshow.core.photoedit import rotate_crop, rotate_image
-from slideshow.core.project import Item, Project, TextOverlay, readable_text
+from slideshow.core.project import MAX_TEXT_FADE, Item, Project, TextOverlay, readable_text
 
 FIT_LABELS = {
     "blur": "Unscharfer Hintergrund",
@@ -268,6 +268,11 @@ class ItemPanel(QWidget):
         bar_row.addWidget(self.bar_color, 1)
         bar_row.addWidget(self.bar_opacity)
         xform.addRow("Balken", bar_row)
+        self.fade = _spin(0.0, MAX_TEXT_FADE, 0.25, " s", "Aus", decimals=2)
+        self.fade.setToolTip("Der Text blendet sanft ein und am Ende des Bildes wieder aus. "
+                             "Im Monitor ist der Text immer ganz zu sehen; die Blende zeigt "
+                             "die Vorschau und das fertige Video.")
+        xform.addRow("Ein-/Ausblenden", self.fade)
         outer.addWidget(self.text_box)
         outer.addStretch(1)
 
@@ -311,6 +316,7 @@ class ItemPanel(QWidget):
         self.bar.toggled.connect(lambda v: self._apply_text("bar", v))
         self.bar_color.colorChanged.connect(lambda c: self._apply_text("bar_color", c))
         self.bar_opacity.valueChanged.connect(lambda v: self._apply_text("bar_opacity", v / 100))
+        self.fade.valueChanged.connect(lambda v: self._apply_text("fade", v))
 
     def _apply(self, fn: Callable[[Item], None], kinds: tuple[str, ...] | None = None) -> None:
         if self._loading or not self.items:
@@ -425,7 +431,8 @@ class ItemPanel(QWidget):
         if it.text is None:
             first = self.items[0].text if self.items and self.items[0].text else DEFAULT_TEXT
             it.text = TextOverlay("", first.position, first.font, first.size, first.color,
-                                  first.bold, first.bar, first.bar_color, first.bar_opacity)
+                                  first.bold, first.bar, first.bar_color, first.bar_opacity,
+                                  first.fade)
         return it.text
 
     def _apply_text(self, field: str, value: object) -> None:
@@ -537,6 +544,7 @@ class ItemPanel(QWidget):
             self.bar.setChecked(ov.bar)
             self.bar_color.set_color(ov.bar_color)
             self.bar_opacity.setValue(round(ov.bar_opacity * 100))
+            self.fade.setValue(ov.fade)
         finally:
             self._loading = False
 
