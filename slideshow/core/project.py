@@ -19,6 +19,7 @@ FIT_MODES = ("blur", "black", "crop")
 # slideleft = Schieben, none = harter Schnitt
 TRANSITIONS = ("fade", "fadeblack", "wipeleft", "slideleft", "none")
 POSITIONS = ("top", "center", "bottom")
+ROTATIONS = (0, 90, 180, 270)
 RESOLUTIONS = {"1080p": (1920, 1080), "2160p": (3840, 2160)}
 PREVIEW_SIZE = (854, 480)
 # Beschädigte Bilder: „trotzdem verwenden“ nur, wenn mindestens dieser Anteil lesbar ist
@@ -84,6 +85,9 @@ class Item:
     # Foto: fixer Bildausschnitt [links, oben, Breite, Höhe], jeweils 0..1 vom (gedrehten)
     # Bild; None = ganzes Bild
     crop: list[float] | None = None
+    # Foto: zusätzliche Drehung im Uhrzeigersinn in Grad (0, 90, 180, 270), nach der
+    # EXIF-Drehung und vor dem Ausschnitt
+    rotation: int = 0
     text: TextOverlay | None = None
     transition: str | None = None  # Übergang vom vorherigen Element; None = Projektstandard
     transition_duration: float | None = None
@@ -132,6 +136,8 @@ class Item:
             raise ValueError(f"Unbekannter Übergang: {self.transition!r}")
         if self.duration is not None and self.duration <= 0:
             raise ValueError("Anzeigedauer muss größer als 0 sein")
+        if self.rotation not in ROTATIONS:
+            raise ValueError(f"Drehung muss 0, 90, 180 oder 270 Grad sein: {self.rotation!r}")
         if self.crop is not None:
             validate_crop(self.crop)
         if self.text is not None:
