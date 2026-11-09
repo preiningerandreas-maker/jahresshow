@@ -85,6 +85,9 @@ def render_text(overlay: TextOverlay, width: int, height: int) -> Image.Image:
     pad = round(size * 0.5)
     margin = round(height * 0.06)
 
+    if overlay.free:
+        return _render_free(img, overlay, lines, font, size, line_h, pad)
+
     if overlay.position == "top":
         y0 = margin + pad
     elif overlay.position == "center":
@@ -104,6 +107,44 @@ def render_text(overlay: TextOverlay, width: int, height: int) -> Image.Image:
         y = y0 + i * line_h
         if not overlay.bar:
             # Leichter Schatten für Lesbarkeit auf hellen Fotos
+            off = max(1, size // 20)
+            draw.text((x + off, y + off), line, font=font, fill=(0, 0, 0, 160))
+        draw.text((x, y), line, font=font, fill=color)
+    return img
+
+
+def _clamp_span(start: float, length: float, lo: float, total: float) -> float:
+    """Anfang eines Blocks der Länge length so legen, dass er zwischen lo und total - lo bleibt
+    (passt er nicht hinein, mittig)."""
+    hi = total - lo - length
+    if hi < lo:
+        return (total - length) / 2
+    return min(max(start, lo), hi)
+
+
+def _render_free(img: Image.Image, overlay: TextOverlay, lines: list[str],
+                 font: ImageFont.FreeTypeFont, size: int, line_h: int, pad: int) -> Image.Image:
+    """Text an freier Position: (x, y) ist die Mitte des Textblocks. Der Block bleibt samt
+    Balken im Bild, auch in den Ecken. Der Balken umschließt nur den Text."""
+    assert overlay.x is not None and overlay.y is not None
+    width, height = img.size
+    block_w = max(font.getlength(line) for line in lines)
+    block_h = line_h * len(lines)
+    edge = round(height * 0.02) + pad
+    left = _clamp_span(overlay.x * width - block_w / 2, block_w, edge, width)
+    top = _clamp_span(overlay.y * height - block_h / 2, block_h, edge, height)
+
+    draw = ImageDraw.Draw(img)
+    if overlay.bar:
+        r, g, b = ImageColor.getrgb(overlay.bar_color)[:3]
+        alpha = round(255 * overlay.bar_opacity)
+        draw.rectangle((left - pad, top - pad, left + block_w + pad, top + block_h + pad),
+                       fill=(r, g, b, alpha))
+    color = ImageColor.getrgb(overlay.color)[:3] + (255,)
+    for i, line in enumerate(lines):
+        x = left + (block_w - font.getlength(line)) / 2
+        y = top + i * line_h
+        if not overlay.bar:
             off = max(1, size // 20)
             draw.text((x + off, y + off), line, font=font, fill=(0, 0, 0, 160))
         draw.text((x, y), line, font=font, fill=color)

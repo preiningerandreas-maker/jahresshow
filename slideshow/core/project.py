@@ -68,8 +68,22 @@ class TextOverlay:
     bar_opacity: float = 0.5
     # Sekunden für sanftes Ein- und Ausblenden des Textes; 0 = Text steht die ganze Zeit
     fade: float = 0.5
+    # Freie Position: Mitte des Textblocks als Anteil des Bildes (0..1). Beide None = die
+    # Voreinstellung in "position" (oben/Mitte/unten, mit Balken über die ganze Breite).
+    x: float | None = None
+    y: float | None = None
+
+    @property
+    def free(self) -> bool:
+        return self.x is not None and self.y is not None
 
     def validate(self) -> None:
+        if (self.x is None) != (self.y is None):
+            raise ValueError("Freie Textposition braucht x und y")
+        if self.free:
+            assert self.x is not None and self.y is not None
+            if not (0.0 <= self.x <= 1.0 and 0.0 <= self.y <= 1.0):
+                raise ValueError("Freie Textposition muss im Bild liegen (0 bis 1)")
         if not 0.0 <= self.fade <= MAX_TEXT_FADE:
             raise ValueError(f"Ein-/Ausblenden muss zwischen 0 und {MAX_TEXT_FADE} s liegen")
         if self.position not in POSITIONS:
