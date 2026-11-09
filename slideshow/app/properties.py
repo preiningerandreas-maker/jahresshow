@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
@@ -26,8 +27,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from slideshow.app.cropdialog import CropDialog
 from slideshow.core.chapters import chapter_title, is_chapter_title
-from slideshow.core.importer import PHOTO_EXTS, describe_file
+from slideshow.core.importer import PHOTO_EXTS, DamagedFile, describe_file, open_photo
 from slideshow.core.project import Item, Project, TextOverlay, readable_text
 
 FIT_LABELS = {
@@ -172,6 +174,19 @@ class ItemPanel(QWidget):
         self.fit_label = QLabel("Bildformat")
         self.fit_label.setToolTip(FIT_HELP)
         form.addRow(self.fit_label, self.fit)
+        crop_row = QHBoxLayout()
+        self.crop_button = QPushButton("Ausschnitt wählen …")
+        self.crop_button.setToolTip("Nur einen Teil des Fotos zeigen: fester Bildausschnitt, "
+                                    "ohne Zoom und Schwenk")
+        self.crop_clear = QPushButton("Ganzes Foto")
+        self.crop_clear.setToolTip("Den Ausschnitt entfernen")
+        crop_row.addWidget(self.crop_button)
+        crop_row.addWidget(self.crop_clear)
+        self.crop_label = QLabel("Ausschnitt")
+        form.addRow(self.crop_label, crop_row)
+        self.crop_state = QLabel("")
+        self.crop_state.setObjectName("propertiesHint")
+        form.addRow(self.crop_state)
         self.transition = combo()
         self.transition.addItem("Wie im Projekt", None)
         for key, label in TRANSITION_LABELS.items():
@@ -259,6 +274,8 @@ class ItemPanel(QWidget):
         self.fit.currentIndexChanged.connect(
             lambda _i: self._apply(lambda it: setattr(it, "fit", self.fit.currentData()),
                                    kinds=("photo", "video")))
+        self.crop_button.clicked.connect(self._choose_crop)
+        self.crop_clear.clicked.connect(lambda: self._set_crop(None))
         self.transition.currentIndexChanged.connect(
             lambda _i: self._apply(
                 lambda it: setattr(it, "transition", self.transition.currentData())))
@@ -288,6 +305,42 @@ class ItemPanel(QWidget):
                 fn(it)
         self._refresh_header()
         self.changed.emit()
+
+    def _single_photo(self) -> Item | None:
+        """Der Ausschnitt gilt für genau ein markiertes Foto."""
+        if len(self.items) == 1 and self.items[0].kind == "photo":
+            return self.items[0]
+        return None
+
+    def _choose_crop(self) -> None:
+        item = self._single_photo()
+        if item is None or self.project is None or item.path is None:
+            return
+        try:
+            image = open_photo(self.project.resolve(item.path), draft=(1800, 1800),
+                               tolerant=item.tolerant_load)
+        except (DamagedFile, OSError) as e:
+            QMessageBox.warning(self, "Foto nicht lesbar",
+                                f"Das Foto kann nicht geöffnet werden:\n{e}")
+            return
+        dialog = CropDialog(image, item.crop, self)
+        if dialog.exec() == CropDialog.DialogCode.Accepted:
+            self._set_crop(dialog.result_crop())
+
+    def _set_crop(self, crop: list[float] | None) -> None:
+        item = self._single_photo()
+        if item is None or item.crop == crop:
+            return
+        item.crop = crop
+        self._load_crop()
+        self.changed.emit()
+
+    def _load_crop(self) -> None:
+        item = self._single_photo()
+        self.crop_state.setText("" if item is None or item.crop is None else
+                                f"Ausschnitt gesetzt: {round(item.crop[2] * 100)} % × "
+                                f"{round(item.crop[3] * 100)} % des Fotos")
+        self.crop_clear.setEnabled(item is not None and item.crop is not None)
 
     def _on_use_damaged(self, on: bool) -> None:
         def apply(it: Item) -> None:
@@ -408,6 +461,10 @@ class ItemPanel(QWidget):
             has_media = bool(kinds & {"photo", "video"})
             self.fit.setVisible(has_media)
             self.fit_label.setVisible(has_media)
+            single_photo = self._single_photo() is not None
+            for w in (self.crop_label, self.crop_button, self.crop_clear, self.crop_state):
+                w.setVisible(single_photo)
+            self._load_crop()
             if not items:
                 return
             it = items[0]

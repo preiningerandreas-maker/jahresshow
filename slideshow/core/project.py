@@ -39,6 +39,16 @@ def readable_text(readable: float | None) -> str:
     return f"lesbar {round(readable * 100)} %"
 
 
+def validate_crop(crop: list[float]) -> None:
+    """Ausschnitt [links, oben, Breite, Höhe] in Anteilen des Bildes."""
+    if len(crop) != 4:
+        raise ValueError("Bildausschnitt braucht vier Werte (links, oben, Breite, Höhe)")
+    x, y, w, h = crop
+    eps = 1e-6
+    if x < -eps or y < -eps or w <= 0 or h <= 0 or x + w > 1 + eps or y + h > 1 + eps:
+        raise ValueError(f"Bildausschnitt liegt nicht im Bild: {crop!r}")
+
+
 def to_frames(seconds: float) -> int:
     return round(seconds * FPS)
 
@@ -71,6 +81,9 @@ class Item:
     duration: float | None = None  # None: Foto/Titel = Projektstandard, Video = Cliplänge
     start: float = 0.0  # Video: Startpunkt im Clip in Sekunden
     fit: str = "blur"
+    # Foto: fixer Bildausschnitt [links, oben, Breite, Höhe], jeweils 0..1 vom (gedrehten)
+    # Bild; None = ganzes Bild
+    crop: list[float] | None = None
     text: TextOverlay | None = None
     transition: str | None = None  # Übergang vom vorherigen Element; None = Projektstandard
     transition_duration: float | None = None
@@ -119,6 +132,8 @@ class Item:
             raise ValueError(f"Unbekannter Übergang: {self.transition!r}")
         if self.duration is not None and self.duration <= 0:
             raise ValueError("Anzeigedauer muss größer als 0 sein")
+        if self.crop is not None:
+            validate_crop(self.crop)
         if self.text is not None:
             self.text.validate()
 
