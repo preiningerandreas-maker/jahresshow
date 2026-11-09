@@ -31,9 +31,31 @@ def apply_crop(img: Image.Image, crop: Sequence[float] | None) -> Image.Image:
     return img.crop(box)
 
 
+def rotate_image(img: Image.Image, degrees: int) -> Image.Image:
+    """Im Uhrzeigersinn um 0, 90, 180 oder 270 Grad drehen."""
+    steps = (degrees // 90) % 4
+    if steps == 0:
+        return img
+    ops = {1: Image.Transpose.ROTATE_270, 2: Image.Transpose.ROTATE_180,
+           3: Image.Transpose.ROTATE_90}  # PIL zählt gegen den Uhrzeigersinn
+    return img.transpose(ops[steps])
+
+
+def rotate_crop(crop: Sequence[float] | None, degrees: int) -> list[float] | None:
+    """Ausschnitt [links, oben, Breite, Höhe] mit dem Bild mitdrehen (im Uhrzeigersinn)."""
+    if crop is None:
+        return None
+    x, y, w, h = crop
+    for _ in range((degrees // 90) % 4):
+        x, y, w, h = 1.0 - y - h, x, h, w
+    return [x, y, w, h]
+
+
 def draft_size(w: int, h: int, crop: Sequence[float] | None) -> tuple[int, int]:
     """Größe für das beschleunigte JPEG-Laden: der Ausschnitt soll danach noch (w, h) füllen,
     das ganze Bild muss also entsprechend größer dekodiert werden."""
     if crop is None:
         return w, h
-    return (max(w, round(w / max(crop[2], 0.01))), max(h, round(h / max(crop[3], 0.01))))
+    # Ob das Bild gedreht wird, ist hier egal: entscheidend ist die längere Seite
+    scale = 1 / max(min(crop[2], crop[3]), 0.01)
+    return max(w, round(w * scale)), max(h, round(h * scale))

@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 from slideshow.app.cropdialog import CropDialog
 from slideshow.core.chapters import chapter_title, is_chapter_title
 from slideshow.core.importer import PHOTO_EXTS, DamagedFile, describe_file, open_photo
+from slideshow.core.photoedit import rotate_crop, rotate_image
 from slideshow.core.project import Item, Project, TextOverlay, readable_text
 
 FIT_LABELS = {
@@ -174,6 +175,18 @@ class ItemPanel(QWidget):
         self.fit_label = QLabel("Bildformat")
         self.fit_label.setToolTip(FIT_HELP)
         form.addRow(self.fit_label, self.fit)
+        rot_row = QHBoxLayout()
+        self.rotate_left = QPushButton("↺ Links")
+        self.rotate_left.setToolTip("Foto um 90 Grad gegen den Uhrzeigersinn drehen")
+        self.rotate_right = QPushButton("Rechts ↻")
+        self.rotate_right.setToolTip("Foto um 90 Grad im Uhrzeigersinn drehen")
+        rot_row.addWidget(self.rotate_left)
+        rot_row.addWidget(self.rotate_right)
+        self.rotate_label = QLabel("Drehen")
+        form.addRow(self.rotate_label, rot_row)
+        self.rotate_state = QLabel("")
+        self.rotate_state.setObjectName("propertiesHint")
+        form.addRow(self.rotate_state)
         crop_row = QHBoxLayout()
         self.crop_button = QPushButton("Ausschnitt wählen …")
         self.crop_button.setToolTip("Nur einen Teil des Fotos zeigen: fester Bildausschnitt, "
@@ -274,6 +287,8 @@ class ItemPanel(QWidget):
         self.fit.currentIndexChanged.connect(
             lambda _i: self._apply(lambda it: setattr(it, "fit", self.fit.currentData()),
                                    kinds=("photo", "video")))
+        self.rotate_left.clicked.connect(lambda: self._rotate(-90))
+        self.rotate_right.clicked.connect(lambda: self._rotate(90))
         self.crop_button.clicked.connect(self._choose_crop)
         self.crop_clear.clicked.connect(lambda: self._set_crop(None))
         self.transition.currentIndexChanged.connect(
@@ -306,6 +321,31 @@ class ItemPanel(QWidget):
         self._refresh_header()
         self.changed.emit()
 
+    def _rotate(self, degrees: int) -> None:
+        """Alle markierten Fotos drehen; ein Ausschnitt dreht mit, bleibt also am selben
+        Bildteil."""
+        if self._loading:
+            return
+        photos = [it for it in self.items if it.kind == "photo"]
+        if not photos:
+            return
+        for it in photos:
+            it.crop = rotate_crop(it.crop, degrees)
+            it.rotation = (it.rotation + degrees) % 360
+        self._load_crop()
+        self._load_rotation()
+        self._refresh_header()
+        self.changed.emit()
+
+    def _load_rotation(self) -> None:
+        photos = [it for it in self.items if it.kind == "photo"]
+        degrees = photos[0].rotation if photos else 0
+        text = {0: "", 90: "Gedreht: 90° rechts", 180: "Gedreht: 180°",
+                270: "Gedreht: 90° links"}[degrees]
+        if len({it.rotation for it in photos}) > 1:
+            text = "Die markierten Fotos sind unterschiedlich gedreht"
+        self.rotate_state.setText(text)
+
     def _single_photo(self) -> Item | None:
         """Der Ausschnitt gilt für genau ein markiertes Foto."""
         if len(self.items) == 1 and self.items[0].kind == "photo":
@@ -323,7 +363,7 @@ class ItemPanel(QWidget):
             QMessageBox.warning(self, "Foto nicht lesbar",
                                 f"Das Foto kann nicht geöffnet werden:\n{e}")
             return
-        dialog = CropDialog(image, item.crop, self)
+        dialog = CropDialog(rotate_image(image, item.rotation), item.crop, self)
         if dialog.exec() == CropDialog.DialogCode.Accepted:
             self._set_crop(dialog.result_crop())
 
@@ -461,6 +501,10 @@ class ItemPanel(QWidget):
             has_media = bool(kinds & {"photo", "video"})
             self.fit.setVisible(has_media)
             self.fit_label.setVisible(has_media)
+            has_photo = "photo" in kinds
+            for w in (self.rotate_label, self.rotate_left, self.rotate_right, self.rotate_state):
+                w.setVisible(has_photo)
+            self._load_rotation()
             single_photo = self._single_photo() is not None
             for w in (self.crop_label, self.crop_button, self.crop_clear, self.crop_state):
                 w.setVisible(single_photo)
