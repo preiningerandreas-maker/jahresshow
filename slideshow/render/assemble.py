@@ -628,7 +628,12 @@ def render_project(
         args += ["-map", "0:v", "-map", "0:a"]
     tmp = tmp_path(output)
     try:
-        run_ffmpeg([*args, "-c:v", "copy", "-c:a", "aac", "-b:a", str(AUDIO_BITRATE),
+        # Die Farbangabe (BT.709, TV-Bereich) im Videostrom nachsetzen, ohne neu zu kodieren:
+        # Manche Grafikkarten-Kodierer (AMD AMF) schreiben sie trotz Parametern nicht.
+        run_ffmpeg([*args, "-c:v", "copy", "-bsf:v",
+                    "h264_metadata=colour_primaries=1:transfer_characteristics=1"
+                    ":matrix_coefficients=1:video_full_range_flag=0",
+                    "-c:a", "aac", "-b:a", str(AUDIO_BITRATE),
                     "-ar", "48000", "-ac", "2", "-movflags", "+faststart",
                     "-f", "mp4", str(tmp)],
                    progress=lambda s: report("Video wird gespeichert",
