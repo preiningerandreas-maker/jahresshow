@@ -30,9 +30,17 @@ from PySide6.QtWidgets import (
 from slideshow.app.cropdialog import CropDialog
 from slideshow.app.positionpad import PositionPad
 from slideshow.core.chapters import chapter_title, is_chapter_title
-from slideshow.core.importer import PHOTO_EXTS, DamagedFile, describe_file, open_photo
+from slideshow.core.ffmpeg import FFmpegError
+from slideshow.core.importer import (
+    PHOTO_EXTS,
+    DamagedFile,
+    clip_length,
+    describe_file,
+    open_photo,
+)
 from slideshow.core.photoedit import rotate_crop, rotate_image
 from slideshow.core.project import MAX_TEXT_FADE, Item, Project, TextOverlay, readable_text
+from slideshow.core.videotrim import set_trim, trim_end
 
 FIT_LABELS = {
     "blur": "Unscharfer Hintergrund",
@@ -105,6 +113,12 @@ def combo() -> QComboBox:
     return c
 
 
+def length_text(seconds: float) -> str:
+    """„1:23 min“ oder „45 s“."""
+    m, s = divmod(round(seconds), 60)
+    return f"{m}:{s:02d} min" if m else f"{s} s"
+
+
 def _spin(lo: float, hi: float, step: float, suffix: str, special: str | None = None,
           decimals: int = 1) -> QDoubleSpinBox:
     s = QDoubleSpinBox()
@@ -165,11 +179,20 @@ class ItemPanel(QWidget):
         self.duration = _spin(0.0, 600.0, 0.5, " s", "Standard")
         self.duration.setToolTip("Wie lange das Element zu sehen ist. „Standard“: Fotos so "
                                  "lange wie im Projekt eingestellt, Videos in voller Länge.")
-        form.addRow("Anzeigedauer", self.duration)
+        self.duration_label = QLabel("Anzeigedauer")
+        form.addRow(self.duration_label, self.duration)
         self.start = _spin(0.0, 36000.0, 0.5, " s")
-        self.start.setToolTip("Ab welcher Stelle das Video abgespielt wird")
-        self.start_label = QLabel("Video ab")
+        self.start.setToolTip("Ab welcher Stelle des Videos abgespielt wird (Sekunden im Video)")
+        self.start_label = QLabel("Video von")
         form.addRow(self.start_label, self.start)
+        self.end = _spin(0.0, 36000.0, 0.5, " s", "Ende des Videos")
+        self.end.setToolTip("Bis zu welcher Stelle das Video abgespielt wird (Sekunden im "
+                            "Video). „Ende des Videos“: bis zum Schluss.")
+        self.end_label = QLabel("Video bis")
+        form.addRow(self.end_label, self.end)
+        self.clip_info = QLabel("")
+        self.clip_info.setObjectName("hint")
+        form.addRow(self.clip_info)
         self.audio = QCheckBox("Originalton verwenden")
         self.audio.setToolTip("Ton des Videos abspielen. Die Musik wird währenddessen leiser.")
         form.addRow(self.audio)
@@ -294,10 +317,11 @@ class ItemPanel(QWidget):
     # --- Verbindung zu den Elementen ---------------------------------------------------
 
     def _connect(self) -> None:
+        # Nur Videos markiert: die Länge steckt in „von/bis“, die Anzeigedauer ist dann ausgeblendet
         self.duration.valueChanged.connect(
             lambda v: self._apply(lambda it: setattr(it, "duration", v or None)))
-        self.start.valueChanged.connect(
-            lambda v: self._apply(lambda it: setattr(it, "start", v), kinds=("video",)))
+        self.start.valueChanged.connect(lambda v: self._trim(start=v))
+        self.end.valueChanged.connect(lambda v: self._trim(end=v))
         self.audio.toggled.connect(
             lambda v: self._apply(lambda it: setattr(it, "audio", v), kinds=("video",)))
         self.use_damaged.toggled.connect(self._on_use_damaged)
@@ -339,6 +363,47 @@ class ItemPanel(QWidget):
                 fn(it)
         self._refresh_header()
         self.changed.emit()
+
+    def _clip_length(self, it: Item) -> float:
+        """Länge des Original-Videos in Sekunden; 0, wenn sie nicht lesbar ist."""
+        if self.project is None or it.path is None:
+            return 0.0
+        try:
+            return clip_length(self.project.resolve(it.path))
+        except (FFmpegError, OSError, ValueError):
+            return 0.0
+
+    def _trim(self, *, start: float | None = None, end: float | None = None) -> None:
+        """Von/Bis geändert: für jedes markierte Video, das andere Ende bleibt je Video."""
+        if self._loading:
+            return
+        videos = [it for it in self.items if it.kind == "video"]
+        if not videos:
+            return
+        for it in videos:
+            set_trim(it, self._clip_length(it), start=start, end=end)
+        self._load_trim()
+        self._refresh_header()
+        self.changed.emit()
+
+    def _load_trim(self) -> None:
+        video = next((it for it in self.items if it.kind == "video"), None)
+        was = self._loading
+        self._loading = True
+        try:
+            if video is None:
+                return
+            length = self._clip_length(video)
+            top = length if length > 0 else 36000.0
+            self.start.setRange(0.0, top)
+            self.end.setRange(0.0, top)
+            self.start.setValue(video.start)
+            end = trim_end(video, length) if length > 0 else 0.0
+            self.end.setValue(0.0 if length <= 0 or video.duration is None else end)
+            self.clip_info.setText(
+                f"Das Video ist {length_text(length)} lang." if length > 0 else "")
+        finally:
+            self._loading = was
 
     def _rotate(self, degrees: int) -> None:
         """Alle markierten Fotos drehen; ein Ausschnitt dreht mit, bleibt also am selben
@@ -581,8 +646,12 @@ class ItemPanel(QWidget):
                 box.setVisible(bool(items))
             self.title_box.setVisible(bool(items) and kinds == {"title"})
             has_video = "video" in kinds
-            for w in (self.start, self.start_label, self.audio):
+            for w in (self.start, self.start_label, self.end, self.end_label,
+                      self.clip_info, self.audio):
                 w.setVisible(has_video)
+            only_video = kinds == {"video"}
+            self.duration.setVisible(not only_video)
+            self.duration_label.setVisible(not only_video)
             has_media = bool(kinds & {"photo", "video"})
             self.fit.setVisible(has_media)
             self.fit_label.setVisible(has_media)
@@ -598,7 +667,7 @@ class ItemPanel(QWidget):
                 return
             it = items[0]
             self.duration.setValue(it.duration or 0.0)
-            self.start.setValue(it.start)
+            self._load_trim()
             self.audio.setChecked(it.audio)
             self.fit.setCurrentIndex(max(0, self.fit.findData(it.fit)))
             self.transition.setCurrentIndex(max(0, self.transition.findData(it.transition)))
