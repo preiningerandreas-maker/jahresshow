@@ -48,6 +48,10 @@ TRANSITION_LABELS = {
     "fadeblack": "Über Schwarz blenden",
     "wipeleft": "Wischen",
     "slideleft": "Schieben",
+    "zoomin": "Zoom (Bild wird größer)",
+    "circleopen": "Kreis öffnen",
+    "radial": "Drehwischer",
+    "pixelize": "Pixel",
     "none": "Harter Schnitt",
 }
 POSITION_LABELS = {"top": "Oben", "center": "Mitte", "bottom": "Unten"}
