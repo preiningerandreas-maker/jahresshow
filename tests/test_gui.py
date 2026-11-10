@@ -1090,7 +1090,10 @@ def test_export_summary_reports_gpu_failure(qtbot, auto_window: MainWindow,  # n
 def test_name_and_copyright_visible(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
     from slideshow import __version__
 
-    assert window.windowTitle() == "Neues Projekt – Flashback"
+    assert window.windowTitle() == "Neues Projekt – Flashback 2.0, November 2026"
+    assert window.version_label.text() == "Flashback 2.0, November 2026"
+    assert window.version_label.isVisible()
+    assert window.version_label.parentWidget() is window.statusBar()
     # Statusleiste: dauerhaft rechts unten, vollständig lesbar
     label = window.copyright_label
     assert label.text() == "© 2026 Andreas Preininger"
@@ -1107,5 +1110,6 @@ def test_name_and_copyright_visible(window: MainWindow, monkeypatch: pytest.Monk
     window.act_about.trigger()
     assert shown and shown[0][0] == "Über Flashback"
     text = shown[0][1]
-    for part in ("Flashback", f"Version {__version__}", "© 2026 Andreas Preininger", "Lizenzen"):
+    for part in ("Flashback 2.0, November 2026", f"Version {__version__}",
+                 "© 2026 Andreas Preininger", "Lizenzen"):
         assert part in text, part
