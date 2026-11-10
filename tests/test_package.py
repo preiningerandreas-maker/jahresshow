@@ -186,7 +186,8 @@ def test_package_size_and_qt_modules() -> None:
 def test_readme_for_end_users() -> None:
     text = (DIST / "README.txt").read_text(encoding="utf-8")
     # read_text liest die CRLF-Datei mit \n als Zeilenende
-    assert text.startswith("Flashback\n=========\n\n© 2026 Andreas Preininger\n")
+    assert text.startswith("Flashback\n=========\n\nVersion 2.0, November 2026\n"
+                           "© 2026 Andreas Preininger\n")
     for needed in ("Flashback.exe", "Windows 10", "Windows 11", "8 GB Arbeitsspeicher",
                    "SmartScreen", "Weitere Informationen", "Trotzdem ausführen", "Lizenzen"):
         assert needed in text, needed
@@ -221,7 +222,7 @@ def test_exe_properties_show_name_and_copyright() -> None:
         "FileDescription": "Flashback – Slideshow aus Fotos und Videos",
         "LegalCopyright": "© 2026 Andreas Preininger",
         "CompanyName": "Andreas Preininger",
-        "ProductVersion": __version__,
+        "ProductVersion": f"{__version__} (November 2026)",
         "OriginalFilename": "Flashback.exe",
     }
     assert "© 2026 Andreas Preininger" in (DIST / "Lizenzen" / "UEBERSICHT.txt").read_text(

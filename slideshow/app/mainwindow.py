@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from slideshow import APP_NAME, COPYRIGHT, __version__
+from slideshow import APP_NAME, COPYRIGHT, VERSION_TEXT, __version__
 from slideshow.app.activity import ActivityPanel, TaskRow
 from slideshow.app.icons import icon
 from slideshow.app.music import MusicPanel, format_minutes
@@ -353,6 +353,9 @@ class MainWindow(QMainWindow):
         zoom_label.setToolTip(tip)
         self.statusBar().addPermanentWidget(zoom_label)
         self.statusBar().addPermanentWidget(self.zoom)
+        self.version_label = QLabel(VERSION_TEXT)
+        self.version_label.setObjectName("versionLabel")
+        self.statusBar().addPermanentWidget(self.version_label)
         self.copyright_label = QLabel(COPYRIGHT)
         self.copyright_label.setObjectName("copyrightLabel")
         self.copyright_label.setToolTip(f"{APP_NAME} {__version__} – Hilfe → Über {APP_NAME}")
@@ -513,7 +516,7 @@ class MainWindow(QMainWindow):
 
     def about_text(self) -> str:
         return (f"<h3>{APP_NAME}</h3>"
-                f"<p>Version {__version__}</p>"
+                f"<p>{VERSION_TEXT}</p><p>Version {__version__}</p>"
                 "<p>Macht aus Fotos und Videos eine Slideshow mit Musik und Texten und "
                 "speichert sie als MP4-Video.</p>"
                 f"<p>{COPYRIGHT}</p>"
@@ -581,7 +584,7 @@ class MainWindow(QMainWindow):
 
     def _update_title(self) -> None:
         name = self.project_path.name if self.project_path else "Neues Projekt"
-        self.setWindowTitle(f"{'*' if self.dirty else ''}{name} – {APP_NAME}")
+        self.setWindowTitle(f"{'*' if self.dirty else ''}{name} – {VERSION_TEXT}")
 
     def _update_empty_hint(self) -> None:
         has_media = any(it.kind != "title" for it in self.project.items)
