@@ -16,8 +16,11 @@ FPS = 30
 KINDS = ("title", "photo", "video")
 FIT_MODES = ("blur", "black", "crop")
 # fade = Überblenden (Standard), fadeblack = über Schwarz, wipeleft = Wischen,
-# slideleft = Schieben, none = harter Schnitt
-TRANSITIONS = ("fade", "fadeblack", "wipeleft", "slideleft", "none")
+# slideleft = Schieben, none = harter Schnitt. Neu in 2.0 (Namen der xfade-Übergänge von
+# FFmpeg): zoomin = Zoom, circleopen = Kreis öffnen, radial = Drehwischer, pixelize = Pixel.
+# Bewusst nicht dabei: dissolve (Auflösen), das Bild wird bei jedem Export etwas anders.
+TRANSITIONS = ("fade", "fadeblack", "wipeleft", "slideleft", "none",
+               "zoomin", "circleopen", "radial", "pixelize")
 POSITIONS = ("top", "center", "bottom")
 DEFAULT_TEXT_SIZE = 56
 DEFAULT_TEXT_COLOR = "#FFFFFF"
