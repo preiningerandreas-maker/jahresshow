@@ -89,6 +89,9 @@ def fit_filter(fit: str, w: int, h: int, src: str, out: str) -> str:
 
 def _item_settings(item: Item) -> dict:
     d = asdict(item)
+    if d.get("text"):  # nur das Ergebnis zählt (Größe/Farbe), nicht woher es kommt
+        d["text"].pop("own_size", None)
+        d["text"].pop("own_color", None)
     # Übergänge, Dauer (steckt in frames) und Kapitel gehören nicht in den Schlüssel
     for k in ("transition", "transition_duration", "duration", "chapter", "taken", "path",
               "damage", "damage_readable"):
@@ -103,6 +106,7 @@ def _item_settings(item: Item) -> dict:
 
 def _picture_key_data(project: Project, item: Item, cache_dir: Path) -> dict:
     """Was das Bild eines Elements bestimmt: Einstellungen, Quelle, Schrift."""
+    item = project.styled(item)
     data: dict = {"item": _item_settings(item)}
     if item.path:
         src = project.resolve(item.path)
@@ -179,6 +183,7 @@ def build_picture(project: Project, item: Item, w: int, h: int, cache_dir: Path,
     fast: Fotos beschleunigt verkleinert laden (nur für Vorschauen).
     frames: Länge des Segments; nur damit blendet der Text ein und aus (das Standbild der
     Vorschau zeigt den Text immer ganz)."""
+    item = project.styled(item)
     work: list[Path] = []
     args: list[str] = []
     graph: list[str] = []

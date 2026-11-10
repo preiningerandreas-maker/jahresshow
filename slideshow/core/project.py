@@ -6,7 +6,7 @@ import json
 import os
 import uuid
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +19,8 @@ FIT_MODES = ("blur", "black", "crop")
 # slideleft = Schieben, none = harter Schnitt
 TRANSITIONS = ("fade", "fadeblack", "wipeleft", "slideleft", "none")
 POSITIONS = ("top", "center", "bottom")
+DEFAULT_TEXT_SIZE = 56
+DEFAULT_TEXT_COLOR = "#FFFFFF"
 MAX_TEXT_FADE = 2.0
 ROTATIONS = (0, 90, 180, 270)
 RESOLUTIONS = {"1080p": (1920, 1080), "2160p": (3840, 2160)}
@@ -60,8 +62,8 @@ class TextOverlay:
     text: str
     position: str = "bottom"
     font: str = "Noto Sans"  # mitgelieferte Schrift oder Pfad zu einer .ttf/.otf
-    size: int = 56  # Pixel bezogen auf 1080p
-    color: str = "#FFFFFF"
+    size: int = DEFAULT_TEXT_SIZE  # Pixel bezogen auf 1080p
+    color: str = DEFAULT_TEXT_COLOR
     bold: bool = False
     bar: bool = True  # halbtransparenter Balken hinter dem Text
     bar_color: str = "#000000"
@@ -72,6 +74,10 @@ class TextOverlay:
     # Voreinstellung in "position" (oben/Mitte/unten, mit Balken über die ganze Breite).
     x: float | None = None
     y: float | None = None
+    # Eigene Größe/Farbe dieses Textes. Sonst gelten Größe und Farbe aus den Projekteinstellungen
+    # (Settings.text_size/text_color) und size/color hier werden nicht beachtet.
+    own_size: bool = False
+    own_color: bool = False
 
     @property
     def free(self) -> bool:
@@ -92,6 +98,18 @@ class TextOverlay:
             raise ValueError("Deckkraft des Balkens muss zwischen 0 und 1 liegen")
         if self.size <= 0:
             raise ValueError("Schriftgröße muss größer als 0 sein")
+
+
+def _load_text(raw: dict[str, Any]) -> TextOverlay:
+    """Text aus der Projektdatei. Alte Projekte kennen den Projektstandard nicht: Eine
+    Größe/Farbe, die vom früheren Standard abweicht, war eine bewusste Wahl und bleibt eigen."""
+    raw = dict(_known(TextOverlay, raw))
+    if "own_size" not in raw:
+        raw["own_size"] = raw.get("size", DEFAULT_TEXT_SIZE) != DEFAULT_TEXT_SIZE
+    if "own_color" not in raw:
+        raw["own_color"] = (str(raw.get("color", DEFAULT_TEXT_COLOR)).upper()
+                            != DEFAULT_TEXT_COLOR)
+    return TextOverlay(**raw)
 
 
 @dataclass
@@ -178,12 +196,17 @@ class Settings:
     transition_duration: float = 1.0
     resolution: str = "1080p"
     chapters: bool = True  # Zwischentitel pro Monat (nur für die Oberfläche)
+    # Standard für alle Texte, die keine eigene Größe/Farbe haben (TextOverlay.own_size/own_color)
+    text_size: int = DEFAULT_TEXT_SIZE
+    text_color: str = DEFAULT_TEXT_COLOR
 
     def validate(self) -> None:
         if self.transition not in TRANSITIONS:
             raise ValueError(f"Unbekannter Übergang: {self.transition!r}")
         if self.resolution not in RESOLUTIONS:
             raise ValueError(f"Unbekannte Auflösung: {self.resolution!r}")
+        if self.text_size <= 0:
+            raise ValueError("Standard-Schriftgröße muss größer als 0 sein")
 
 
 @dataclass
@@ -206,6 +229,18 @@ class Project:
     settings: Settings = field(default_factory=Settings)
     schema_version: int = SCHEMA_VERSION
     base_dir: Path = field(default_factory=Path.cwd, repr=False, compare=False)
+
+    def styled(self, item: Item) -> Item:
+        """Das Element mit der tatsächlich geltenden Textgröße und -farbe (Projektstandard,
+        wo der Text keine eigene hat). Das Original bleibt unverändert."""
+        t = item.text
+        if t is None:
+            return item
+        size = t.size if t.own_size else self.settings.text_size
+        color = t.color if t.own_color else self.settings.text_color
+        if (size, color) == (t.size, t.color):
+            return item
+        return replace(item, text=replace(t, size=size, color=color))
 
     def validate(self) -> None:
         self.settings.validate()
@@ -297,7 +332,7 @@ class Project:
         for raw in data.get("items", []):
             raw = _known(Item, raw)
             if raw.get("text") is not None:
-                raw["text"] = TextOverlay(**_known(TextOverlay, raw["text"]))
+                raw["text"] = _load_text(raw["text"])
             items.append(Item(**raw))
         project = cls(
             name=data.get("name", "Jahresrückblick"),
