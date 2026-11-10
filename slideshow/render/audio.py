@@ -44,6 +44,16 @@ def duck_expression(ranges: list[tuple[float, float]], duck: float, ramp: float 
     return f"1-{1 - duck:.3f}*clip({'+'.join(terms)},0,1)"
 
 
+def trim_filter(start: float, end: float | None) -> str:
+    """Filterkette (mit Komma am Ende), die ein Stück auf [start, end] kürzt, sonst leer."""
+    if start <= 0 and end is None:
+        return ""
+    parts = [f"start={start:.3f}"] if start > 0 else []
+    if end is not None:
+        parts.append(f"end={end:.3f}")
+    return f"atrim={':'.join(parts)},asetpts=PTS-STARTPTS,"
+
+
 def build_music(
     project: Project,
     total_seconds: float,
@@ -60,15 +70,20 @@ def build_music(
     music_dir = cache_dir / "music"
     music_dir.mkdir(parents=True, exist_ok=True)
     fps = [file_fingerprint(t) for t in tracks]
+    trims = [project.music.trim_of(t) for t in project.music.tracks]
+    # Ohne Ausschnitt bleibt der Schlüssel wie bisher, alte Zwischenstände gelten weiter
+    pkey: dict = {"type": "playlist", "tracks": fps}
+    if any(t != (0.0, None) for t in trims):
+        pkey["trims"] = [list(t) for t in trims]
 
-    playlist = music_dir / f"{make_key({'type': 'playlist', 'tracks': fps})}.wav"
+    playlist = music_dir / f"{make_key(pkey)}.wav"
     if not playlist.is_file():
         args: list[str] = []
         chain = []
         for i, t in enumerate(tracks):
             args += ["-i", str(t)]
             chain.append(
-                f"[{i}:a]aresample={SAMPLE_RATE},"
+                f"[{i}:a]{trim_filter(*trims[i])}aresample={SAMPLE_RATE},"
                 f"aformat=sample_fmts=s16:channel_layouts=stereo[a{i}]"
             )
         joined = "".join(f"[a{i}]" for i in range(len(tracks)))
@@ -84,6 +99,7 @@ def build_music(
     m = project.music
     key = make_key({
         "type": "music", "tracks": fps, "total": round(total_seconds, 4),
+        **({"trims": pkey["trims"]} if "trims" in pkey else {}),
         "ranges": [[round(a, 4), round(b, 4)] for a, b in ranges],
         "volume": m.volume, "duck": m.duck_volume, "fade": m.fade_out,
     })
