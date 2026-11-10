@@ -264,6 +264,10 @@ class ItemPanel(QWidget):
         xform.addRow("Größe", size_row)
         self.color = ColorButton("Textfarbe")
         xform.addRow("Farbe", self.color)
+        self.use_default_style = QPushButton("Größe und Farbe wie im Projekt")
+        self.use_default_style.setToolTip(
+            "Dieser Text folgt wieder dem Standard aus „Ganze Show“ (Größe und Farbe)")
+        xform.addRow(self.use_default_style)
         self.bar = QCheckBox("Halbtransparenter Balken hinter dem Text")
         xform.addRow(self.bar)
         bar_row = QHBoxLayout()
@@ -318,9 +322,10 @@ class ItemPanel(QWidget):
         self.position.currentIndexChanged.connect(self._on_position)
         self.pad.moved.connect(self._on_pad)
         self.font_combo.activated.connect(self._on_font)
-        self.size.valueChanged.connect(lambda v: self._apply_text("size", v))
+        self.size.valueChanged.connect(lambda v: self._apply_own("size", v))
+        self.use_default_style.clicked.connect(self._use_default_style)
         self.bold.toggled.connect(lambda v: self._apply_text("bold", v))
-        self.color.colorChanged.connect(lambda c: self._apply_text("color", c))
+        self.color.colorChanged.connect(lambda c: self._apply_own("color", c))
         self.bar.toggled.connect(lambda v: self._apply_text("bar", v))
         self.bar_color.colorChanged.connect(lambda c: self._apply_text("bar_color", c))
         self.bar_opacity.valueChanged.connect(lambda v: self._apply_text("bar_opacity", v / 100))
@@ -440,11 +445,35 @@ class ItemPanel(QWidget):
             first = self.items[0].text if self.items and self.items[0].text else DEFAULT_TEXT
             it.text = TextOverlay("", first.position, first.font, first.size, first.color,
                                   first.bold, first.bar, first.bar_color, first.bar_opacity,
-                                  first.fade, first.x, first.y)
+                                  first.fade, first.x, first.y, first.own_size, first.own_color)
         return it.text
 
     def _apply_text(self, field: str, value: object) -> None:
         self._apply(lambda it: setattr(self._overlay(it), field, value))
+
+    def _apply_own(self, field: str, value: object) -> None:
+        """Größe oder Farbe geändert: gilt ab jetzt als eigene Wahl dieses Textes."""
+        if self._loading:
+            return
+
+        def set_own(it: Item) -> None:
+            ov = self._overlay(it)
+            setattr(ov, field, value)
+            setattr(ov, f"own_{field}", True)
+        self._apply(set_own)
+        self._refresh_style_button()
+
+    def _use_default_style(self) -> None:
+        def reset(it: Item) -> None:
+            if it.text is not None:
+                it.text.own_size = it.text.own_color = False
+        self._apply(reset)
+        self._load()
+
+    def _refresh_style_button(self) -> None:
+        self.use_default_style.setEnabled(any(
+            it.text is not None and (it.text.own_size or it.text.own_color)
+            for it in self.items))
 
     def _on_position(self, _index: int) -> None:
         """Voreinstellung oder „Frei“: Frei startet dort, wo der Text gerade sitzt."""
@@ -587,9 +616,12 @@ class ItemPanel(QWidget):
                                            ov.font)
                 font_idx = self.font_combo.findData(ov.font)
             self.font_combo.setCurrentIndex(font_idx)
-            self.size.setValue(ov.size)
+            shown = self.project.styled(it) if self.project is not None else it
+            style = shown.text or DEFAULT_TEXT
+            self.size.setValue(style.size)
             self.bold.setChecked(ov.bold)
-            self.color.set_color(ov.color)
+            self.color.set_color(style.color)
+            self._refresh_style_button()
             self.bar.setChecked(ov.bar)
             self.bar_color.set_color(ov.bar_color)
             self.bar_opacity.setValue(round(ov.bar_opacity * 100))
@@ -623,6 +655,16 @@ class ProjectPanel(QWidget):
         form.addRow("Übergang", self.transition)
         self.transition_duration = _spin(0.25, 5.0, 0.25, " s", decimals=2)
         form.addRow("Übergangsdauer", self.transition_duration)
+        self.text_size = QSpinBox()
+        self.text_size.setRange(12, 300)
+        self.text_size.setSuffix(" px")
+        self.text_size.setKeyboardTracking(False)
+        self.text_size.setToolTip("Schriftgröße für alle Texte, die keine eigene Größe haben "
+                                  "(bezogen auf Full HD)")
+        form.addRow("Schriftgröße", self.text_size)
+        self.text_color = ColorButton("Standard-Textfarbe")
+        self.text_color.setToolTip("Textfarbe für alle Texte, die keine eigene Farbe haben")
+        form.addRow("Schriftfarbe", self.text_color)
         self.chapters = QCheckBox("Zwischentitel für jeden Monat")
         self.chapters.setToolTip("Vor jedem neuen Monat erscheint ein Titel wie „März 2026“. "
                                  "Den Text können Sie in der Zeitleiste anklicken und ändern.")
@@ -645,6 +687,10 @@ class ProjectPanel(QWidget):
         self.resolution.currentIndexChanged.connect(
             lambda _i: self._set(
                 lambda p: setattr(p.settings, "resolution", self.resolution.currentData())))
+        self.text_size.valueChanged.connect(
+            lambda v: self._set(lambda p: setattr(p.settings, "text_size", v)))
+        self.text_color.colorChanged.connect(
+            lambda c: self._set(lambda p: setattr(p.settings, "text_color", c)))
         self.chapters.toggled.connect(self._on_chapters)
 
     def _set(self, fn: Callable[[Project], None]) -> None:
@@ -666,6 +712,8 @@ class ProjectPanel(QWidget):
             self.photo_duration.setValue(s.photo_duration)
             self.transition.setCurrentIndex(max(0, self.transition.findData(s.transition)))
             self.transition_duration.setValue(s.transition_duration)
+            self.text_size.setValue(s.text_size)
+            self.text_color.set_color(s.text_color)
             self.chapters.setChecked(s.chapters)
             self.resolution.setCurrentIndex(max(0, self.resolution.findData(s.resolution)))
         finally:

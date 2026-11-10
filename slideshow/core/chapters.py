@@ -40,7 +40,7 @@ def make_chapter_title(key: str) -> Item:
         duration=CHAPTER_DURATION,
         background=CHAPTER_BACKGROUND,
         text=TextOverlay(chapter_title(key), position="center", size=CHAPTER_TEXT_SIZE,
-                         bold=True, bar=False),
+                         own_size=True, bold=True, bar=False),
         chapter=key,
     )
 

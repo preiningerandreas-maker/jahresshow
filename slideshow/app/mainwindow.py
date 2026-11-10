@@ -125,7 +125,7 @@ def new_project() -> Project:
     year = date.today().year
     title = Item("title", duration=5.0,
                  text=TextOverlay(f"Jahresrückblick {year}", position="center", size=110,
-                                  bold=True, bar=False))
+                                  own_size=True, bold=True, bar=False))
     return Project(name=f"Jahresrückblick {year}", items=[title])
 
 
@@ -725,13 +725,18 @@ class MainWindow(QMainWindow):
 
     def _on_project_changed(self) -> None:
         self.model.refresh_rows(None)
+        # Der Projektstandard (Schrift) wirkt auf markierte Texte: Anzeige und Standbild auffrischen
+        items = self.selected_items()
+        self.item_panel.set_items(self.project, items)
+        self._show_still(items)
         self.mark_dirty()
 
     def add_title_card(self) -> None:
         rows = self.timeline.selected_rows()
         pos = rows[0] if rows else 0
         title = Item("title", duration=5.0, text=TextOverlay(
-            self.project.name or "Titel", position="center", size=110, bold=True, bar=False))
+            self.project.name or "Titel", position="center", size=110, own_size=True,
+            bold=True, bar=False))
         items = list(self.project.items)
         items.insert(pos, title)
         self.model.replace_items(self._apply_chapters(items))
