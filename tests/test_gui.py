@@ -1137,3 +1137,24 @@ def test_delete_single_month_title_and_undo(qtbot, window: MainWindow) -> None: 
     assert window.project.settings.skipped_chapters == []
     assert [it.chapter for it in window.project.items if is_chapter_title(it)] == [
         "2022-09", "2022-10"]
+
+
+def test_restore_deleted_month_titles(qtbot, window: MainWindow) -> None:  # noqa: ANN001
+    ph = [Item("photo", path="a.jpg", taken="2022-09-03T10:00:00"),
+          Item("photo", path="b.jpg", taken="2022-10-03T10:00:00")]
+    window.model.replace_items(apply_chapters(ph, True))
+    assert not window.act_restore_chapters.isEnabled()
+    titles = [i for i, it in enumerate(window.project.items) if is_chapter_title(it)]
+    window.timeline.select_rows(titles)
+    window.remove_selected()
+    assert not any(is_chapter_title(it) for it in window.project.items)
+    assert window.act_restore_chapters.isEnabled()
+    window.restore_chapters()  # wie nach Speichern und Neuöffnen: Liste steht im Projekt
+    assert [it.chapter for it in window.project.items if is_chapter_title(it)] == [
+        "2022-09", "2022-10"]
+    assert window.project.settings.skipped_chapters == []
+    assert not window.act_restore_chapters.isEnabled()
+    window.undo()  # Wiedereinsetzen lässt sich ebenfalls zurücknehmen
+    assert not any(is_chapter_title(it) for it in window.project.items)
+    assert window.project.settings.skipped_chapters == ["2022-09", "2022-10"]
+    assert window.act_restore_chapters.isEnabled()

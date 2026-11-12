@@ -411,6 +411,10 @@ class MainWindow(QMainWindow):
         self.act_undo = self._action("Löschen rückgängig", self.undo, "Ctrl+Z", None,
                                      "Das zuletzt Gelöschte zurückholen")
         self.act_undo.setEnabled(False)
+        self.act_restore_chapters = self._action(
+            "Zwischentitel wieder einsetzen", self.restore_chapters, None, None,
+            "Alle gelöschten Monats-Zwischentitel wieder anlegen")
+        self.act_restore_chapters.setEnabled(False)
         self.act_sort = self._action("Nach Aufnahmedatum sortieren", self.sort_by_date, None,
                                      "arrow_sort")
         self.act_preview = self._action(
@@ -433,6 +437,7 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         m.addAction(self.act_undo)
         m.addAction(self.act_remove)
+        m.addAction(self.act_restore_chapters)
         m.addAction(self.act_sort)
         m = menu.addMenu("&Show")
         m.addAction(self.act_preview)
@@ -575,11 +580,13 @@ class MainWindow(QMainWindow):
         self.project_path = path
         self._chapter_stash = {}
         self._undo_stack = []
+        self.act_undo.setEnabled(False)
         project.items = apply_chapters(project.items, project.settings.chapters,
                                        project.settings.skipped_chapters)
         self.model.duplicates = set()
         self.model.set_project(project)
         self.project_panel.set_project(project)
+        self._update_restore_action()
         self.music_panel.set_project(project)
         self.item_panel.set_items(project, [])
         self._show_still([])
@@ -769,8 +776,24 @@ class MainWindow(QMainWindow):
                 settings.skipped_chapters.append(it.chapter)
         items = [it for i, it in enumerate(self.project.items) if i not in rows]
         self.model.replace_items(self._apply_chapters(items))
+        self._update_restore_action()
         self.item_panel.set_items(self.project, [])
         self._show_still([])
+        self.mark_dirty()
+
+    def _update_restore_action(self) -> None:
+        self.act_restore_chapters.setEnabled(bool(self.project.settings.skipped_chapters))
+
+    def restore_chapters(self) -> None:
+        """Alle gelöschten Monats-Zwischentitel wieder anlegen."""
+        settings = self.project.settings
+        if not settings.skipped_chapters:
+            return
+        self._undo_stack.append((list(self.project.items), list(settings.skipped_chapters)))
+        self.act_undo.setEnabled(True)
+        settings.skipped_chapters = []
+        self.model.replace_items(self._apply_chapters(self.project.items))
+        self._update_restore_action()
         self.mark_dirty()
 
     def undo(self) -> None:
@@ -783,6 +806,7 @@ class MainWindow(QMainWindow):
         self.item_panel.set_items(self.project, [])
         self._show_still([])
         self.act_undo.setEnabled(bool(self._undo_stack))
+        self._update_restore_action()
         self.mark_dirty()
 
     def sort_by_date(self) -> None:
