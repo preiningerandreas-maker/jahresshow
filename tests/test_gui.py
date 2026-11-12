@@ -20,7 +20,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from slideshow.app.mainwindow import ImportOutcome, MainWindow, export_summary
 from slideshow.app.single import KEY_ENV, SingleInstance
-from slideshow.core.chapters import is_chapter_title
+from slideshow.core.chapters import apply_chapters, is_chapter_title
 from slideshow.core.project import Item, Project, TextOverlay
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1113,3 +1113,27 @@ def test_name_and_copyright_visible(window: MainWindow, monkeypatch: pytest.Monk
     for part in ("Flashback 2.0, November 2026", f"Version {__version__}",
                  "© 2026 Andreas Preininger", "Lizenzen"):
         assert part in text, part
+
+
+def test_delete_single_month_title_and_undo(qtbot, window: MainWindow) -> None:  # noqa: ANN001
+    ph = [Item("photo", path="a.jpg", taken="2022-09-03T10:00:00"),
+          Item("photo", path="b.jpg", taken="2022-10-03T10:00:00")]
+    window.model.replace_items(apply_chapters(ph, True))
+    titles = [i for i, it in enumerate(window.project.items) if is_chapter_title(it)]
+    assert len(titles) == 2
+    n = len(window.project.items)
+    window.timeline.select_rows([titles[0]])
+    window.remove_selected()
+    assert len(window.project.items) == n - 1
+    assert [it.chapter for it in window.project.items if is_chapter_title(it)] == ["2022-10"]
+    assert window.project.settings.skipped_chapters == ["2022-09"]
+    # Neuaufbau (z. B. Sortieren) bringt den gelöschten Titel nicht zurück
+    window.sort_by_date()
+    assert len([it for it in window.project.items if is_chapter_title(it)]) == 1
+    # Strg+Z nimmt das Löschen zurück
+    assert window.act_undo.shortcut().toString() == "Ctrl+Z"
+    window.undo()
+    assert len(window.project.items) == n
+    assert window.project.settings.skipped_chapters == []
+    assert [it.chapter for it in window.project.items if is_chapter_title(it)] == [
+        "2022-09", "2022-10"]

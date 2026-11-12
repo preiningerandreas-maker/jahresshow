@@ -122,3 +122,25 @@ def test_chapters_from_import_with_umlauts(synthetic: Path, umlaut_dir: Path) ->
     loaded = Project.load(umlaut_dir / "Kapitel Ä.json")
     assert _summary(loaded.items) == _summary(items)
     assert [it.chapter for it in loaded.items] == [it.chapter for it in items]
+
+
+def test_skipped_month_gets_no_title_and_survives_save(tmp_path: Path) -> None:
+    items = [Item("photo", path="a.jpg", taken="2022-09-03T10:00:00"),
+             Item("photo", path="b.jpg", taken="2022-10-03T10:00:00")]
+    out = apply_chapters(items, True, skipped=["2022-09"])
+    assert [it.chapter for it in out if is_chapter_title(it)] == ["2022-10"]
+    # auch ein schon vorhandener Titel des Monats fällt weg
+    again = apply_chapters(apply_chapters(items, True) + [], True, skipped=["2022-09"])
+    assert [it.chapter for it in again if is_chapter_title(it)] == ["2022-10"]
+    project = Project(items=out)
+    project.settings.skipped_chapters = ["2022-09"]
+    path = tmp_path / "p.json"
+    project.save(path)
+    assert Project.load(path).settings.skipped_chapters == ["2022-09"]
+
+
+def test_old_project_without_skipped_chapters_loads(tmp_path: Path) -> None:
+    path = tmp_path / "alt.json"
+    path.write_text('{"schema_version": 1, "name": "x", "items": [], "settings": {}}',
+                    encoding="utf-8")
+    assert Project.load(path).settings.skipped_chapters == []

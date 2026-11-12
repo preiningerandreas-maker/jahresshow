@@ -229,6 +229,8 @@ class MainWindow(QMainWindow):
         self.dirty = False
         self.total_seconds: float | None = None
         self._chapter_stash: dict[str, Item] = {}
+        # Rückgängig fürs Löschen: (Elemente, übersprungene Monate) vor dem Löschen
+        self._undo_stack: list[tuple[list[Item], list[str]]] = []
         self._import_task: Task | None = None
         self._render_task: Task | None = None
         self._duration_task: Task | None = None
@@ -406,6 +408,9 @@ class MainWindow(QMainWindow):
             "Musik", self.on_add_music, None, "music_note_2", "Musikstücke hinzufügen")
         self.act_remove = self._action("Markierte entfernen", self.remove_selected, None,
                                        "delete")
+        self.act_undo = self._action("Löschen rückgängig", self.undo, "Ctrl+Z", None,
+                                     "Das zuletzt Gelöschte zurückholen")
+        self.act_undo.setEnabled(False)
         self.act_sort = self._action("Nach Aufnahmedatum sortieren", self.sort_by_date, None,
                                      "arrow_sort")
         self.act_preview = self._action(
@@ -426,6 +431,7 @@ class MainWindow(QMainWindow):
                   self.act_add_music):
             m.addAction(a)
         m.addSeparator()
+        m.addAction(self.act_undo)
         m.addAction(self.act_remove)
         m.addAction(self.act_sort)
         m = menu.addMenu("&Show")
@@ -568,7 +574,9 @@ class MainWindow(QMainWindow):
         self.project = project
         self.project_path = path
         self._chapter_stash = {}
-        project.items = apply_chapters(project.items, project.settings.chapters)
+        self._undo_stack = []
+        project.items = apply_chapters(project.items, project.settings.chapters,
+                                       project.settings.skipped_chapters)
         self.model.duplicates = set()
         self.model.set_project(project)
         self.project_panel.set_project(project)
@@ -687,7 +695,7 @@ class MainWindow(QMainWindow):
         if on:
             # Früher ausgeblendete (evtl. bearbeitete) Zwischentitel wieder verwenden
             items = list(self._chapter_stash.values()) + items
-        return apply_chapters(items, on)
+        return apply_chapters(items, on, self.project.settings.skipped_chapters)
 
     def set_chapters(self, on: bool) -> None:
         rows = self.timeline.selected_rows()
@@ -750,16 +758,31 @@ class MainWindow(QMainWindow):
         rows = set(self.timeline.selected_rows())
         if not rows:
             return
-        if self.project.settings.chapters and all(
-                is_chapter_title(self.project.items[r]) for r in rows):
-            self.notice.show_message(
-                "Zwischentitel entstehen automatisch für jeden Monat. Abschalten können Sie "
-                "sie im Bereich „Show“ unter „Zwischentitel für jeden Monat“.", "info")
-            return
+        settings = self.project.settings
+        self._undo_stack.append((list(self.project.items), list(settings.skipped_chapters)))
+        self.act_undo.setEnabled(True)
+        # Gelöschter Monats-Zwischentitel: Monat merken, damit er nicht neu entsteht
+        for r in rows:
+            it = self.project.items[r]
+            if is_chapter_title(it) and it.chapter not in settings.skipped_chapters:
+                assert it.chapter is not None
+                settings.skipped_chapters.append(it.chapter)
         items = [it for i, it in enumerate(self.project.items) if i not in rows]
         self.model.replace_items(self._apply_chapters(items))
         self.item_panel.set_items(self.project, [])
         self._show_still([])
+        self.mark_dirty()
+
+    def undo(self) -> None:
+        """Das letzte Löschen zurücknehmen (Strg+Z)."""
+        if not self._undo_stack:
+            return
+        items, skipped = self._undo_stack.pop()
+        self.project.settings.skipped_chapters = skipped
+        self.model.replace_items(self._apply_chapters(items))
+        self.item_panel.set_items(self.project, [])
+        self._show_still([])
+        self.act_undo.setEnabled(bool(self._undo_stack))
         self.mark_dirty()
 
     def sort_by_date(self) -> None:
