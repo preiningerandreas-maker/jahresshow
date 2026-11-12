@@ -271,10 +271,10 @@ class MainWindow(QMainWindow):
         self.timeline.setObjectName("timeline")
         self.timeline.setModel(self.model)
 
-        self.item_panel = ItemPanel()
+        self.item_panel = ItemPanel(cache_dir=self.cache_dir)
         self.item_panel.has_track = self.model.has_track
         self.project_panel = ProjectPanel()
-        self.music_panel = MusicPanel()
+        self.music_panel = MusicPanel(cache_dir=self.cache_dir)
         self.tabs = QTabWidget()
         self.tabs.addTab(_scroll(self.item_panel), "Element")
         self.tabs.addTab(_scroll(self.project_panel), "Show")

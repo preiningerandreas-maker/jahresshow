@@ -30,6 +30,8 @@ from PySide6.QtWidgets import (
 from slideshow.app.cropdialog import CropDialog
 from slideshow.app.fonts import FontDialog, font_label
 from slideshow.app.positionpad import PositionPad
+from slideshow.app.scrubwidgets import FramePreview
+from slideshow.app.trimbar import START, TrimBar
 from slideshow.core.chapters import chapter_title, is_chapter_title
 from slideshow.core.ffmpeg import FFmpegError
 from slideshow.core.importer import (
@@ -49,7 +51,7 @@ from slideshow.core.project import (
     TextOverlay,
     readable_text,
 )
-from slideshow.core.videotrim import set_trim, trim_end
+from slideshow.core.videotrim import MIN_CLIP, set_trim, trim_end
 
 FIT_LABELS = {
     "blur": "Unscharfer Hintergrund",
@@ -171,10 +173,13 @@ class ItemPanel(QWidget):
 
     changed = Signal()  # Elemente wurden geändert (Zeitleiste neu zeichnen, Dauer neu)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, cache_dir: Path | None = None) -> None:
         super().__init__(parent)
+        self.cache_dir = cache_dir
         self.project: Project | None = None
         self.items: list[Item] = []
+        self._bar_last = "start"  # zuletzt gezogener Schieber
+        self._scrub_src: Path | None = None
         self._loading = False
         # Hat das Video eine Tonspur? Liefert das Hauptfenster (aus der Zeitleiste)
         self.has_track: Callable[[Item], bool] = lambda it: it.kind == "video"
@@ -228,6 +233,15 @@ class ItemPanel(QWidget):
         self.clip_info = QLabel("")
         self.clip_info.setObjectName("hint")
         form.addRow(self.clip_info)
+        # Schnitt-Leiste mit zwei Schiebern; beim Ziehen zeigt die Vorschau das Bild dort
+        self.trim_bar = TrimBar(MIN_CLIP)
+        self.trim_bar.setToolTip("Anfang und Ende des Videos ziehen. Das Bild darunter zeigt "
+                                 "die Stelle des Schiebers. Pfeiltasten verschieben um 0,5 s "
+                                 "(Pfeil hoch/runter wechselt den Schieber).")
+        form.addRow(self.trim_bar)
+        self.scrub = FramePreview(cache_dir) if cache_dir is not None else None
+        if self.scrub is not None:
+            form.addRow(self.scrub)
         self.audio = MixedCheckBox("Originalton verwenden")
         self.audio.setToolTip("Ton des Videos abspielen. Die Musik wird währenddessen leiser. "
                               "Ein Strich bedeutet: nur bei einem Teil der markierten Videos.")
@@ -371,6 +385,8 @@ class ItemPanel(QWidget):
             lambda v: self._apply(lambda it: setattr(it, "duration", v or None)))
         self.start.valueChanged.connect(lambda v: self._trim(start=v))
         self.end.valueChanged.connect(lambda v: self._trim(end=v))
+        self.trim_bar.changing.connect(self._on_bar_changing)
+        self.trim_bar.committed.connect(self._on_bar_committed)
         self.audio.checkStateChanged.connect(self._on_audio)
         self.volume.valueChanged.connect(
             lambda v: self._apply_sound(lambda it: setattr(it, "volume", v / 100)))
@@ -466,6 +482,39 @@ class ItemPanel(QWidget):
         self._load_trim()
         self._refresh_header()
         self.changed.emit()
+        if self.scrub is not None and len(videos) == 1:  # Bild an der geänderten Stelle
+            video = videos[0]
+            at = video.start if start is not None else trim_end(video, self._clip_length(video))
+            self.scrub.show_at(at)
+            self.scrub.show_exact(at)
+
+    def _on_bar_changing(self, which: str, start: float, end: float) -> None:
+        """Schieber wird gezogen: Sekundenfelder mitführen, Bild an der Stelle zeigen."""
+        self._bar_last = which
+        was = self._loading
+        self._loading = True
+        try:
+            self.start.setValue(start)
+            self.end.setValue(0.0 if end >= self.trim_bar.length - 0.05 else end)
+        finally:
+            self._loading = was
+        if self.scrub is not None:
+            self.scrub.show_at(start if which == START else end)
+
+    def _on_bar_committed(self, start: float, end: float) -> None:
+        """Schieber losgelassen: ins Projekt schreiben, genaues Bild nachladen."""
+        videos = [it for it in self.items if it.kind == "video"]
+        if self._loading or len(videos) != 1:
+            return
+        video = videos[0]
+        length = self._clip_length(video)
+        set_trim(video, length, start=start, end=end)
+        self._load_trim()
+        self._refresh_header()
+        self.changed.emit()
+        if self.scrub is not None:
+            at = video.start if self._bar_last == START else trim_end(video, length)
+            self.scrub.show_exact(at)
 
     def _load_trim(self) -> None:
         video = next((it for it in self.items if it.kind == "video"), None)
@@ -473,6 +522,10 @@ class ItemPanel(QWidget):
         self._loading = True
         try:
             if video is None:
+                self.trim_bar.setVisible(False)
+                if self.scrub is not None:
+                    self.scrub.setVisible(False)
+                    self._scrub_src = None
                 return
             length = self._clip_length(video)
             top = length if length > 0 else 36000.0
@@ -483,6 +536,17 @@ class ItemPanel(QWidget):
             self.end.setValue(0.0 if length <= 0 or video.duration is None else end)
             self.clip_info.setText(
                 f"Das Video ist {length_text(length)} lang." if length > 0 else "")
+            single = len(self.items) == 1 and video.path is not None and length > 0
+            self.trim_bar.setVisible(single)
+            if single:
+                self.trim_bar.set_length(length)
+                self.trim_bar.set_values(video.start, 0.0 if video.duration is None else end)
+            if self.scrub is not None:
+                self.scrub.setVisible(single)
+                src = self.project.resolve(video.path) if single and self.project else None
+                if src != self._scrub_src:
+                    self._scrub_src = src
+                    self.scrub.set_source(src)
         finally:
             self._loading = was
 

@@ -102,6 +102,17 @@ def kill_tree(pid: int) -> None:
     subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True)
 
 
+def test_package_has_lean_audio_backend_only() -> None:
+    """Vorhören an der Schnitt-Leiste: Qt Multimedia mit der Windows-Anbindung. Die
+    FFmpeg-Anbindung von Qt und ihre Bibliotheken dürfen nicht mit, sie kollidieren mit
+    dem FFmpeg des Programms."""
+    qt = DIST / "_internal" / "PySide6"
+    assert (qt / "Qt6Multimedia.dll").is_file()
+    assert (qt / "plugins" / "multimedia" / "windowsmediaplugin.dll").is_file()
+    assert not (qt / "plugins" / "multimedia" / "ffmpegmediaplugin.dll").exists()
+    assert not list(qt.glob("av*.dll")) and not list(qt.glob("sw*.dll"))
+
+
 def test_package_contents() -> None:
     for name in ("Flashback.exe", "ffmpeg.exe", "ffprobe.exe", "README.txt"):
         assert (DIST / name).is_file(), name
@@ -171,11 +182,13 @@ def test_package_size_and_qt_modules() -> None:
     names = {p.relative_to(DIST).as_posix() for p in files}
     qt = "_internal/PySide6/"
     for needed in ("Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll", "Qt6Network.dll",
-                   "Qt6Svg.dll", "plugins/platforms/qwindows.dll",
+                   "Qt6Svg.dll", "Qt6Multimedia.dll", "plugins/platforms/qwindows.dll",
+                   "plugins/multimedia/windowsmediaplugin.dll",
                    "plugins/iconengines/qsvgicon.dll", "plugins/imageformats/qjpeg.dll",
                    "translations/qtbase_de.qm"):
         assert qt + needed in names, needed
-    unwanted = re.compile(r"Qt6(Quick|Qml|Pdf|OpenGL|VirtualKeyboard|WebEngine|Multimedia|3D)"
+    unwanted = re.compile(r"Qt6(Quick|Qml|Pdf|OpenGL|VirtualKeyboard|WebEngine|3D)"
+                          r"|Qt6Multimedia(Widgets|Quick)"
                           r"|opengl32sw|qdirect2d|platforminputcontexts|/tls/", re.IGNORECASE)
     assert not [n for n in names if unwanted.search(n)]
     translations = [n for n in names if "/translations/" in n]
