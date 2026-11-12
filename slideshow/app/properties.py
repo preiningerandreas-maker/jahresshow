@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from slideshow.app.cropdialog import CropDialog
+from slideshow.app.fonts import FontDialog, font_label
 from slideshow.app.positionpad import PositionPad
 from slideshow.core.chapters import chapter_title, is_chapter_title
 from slideshow.core.ffmpeg import FFmpegError
@@ -591,14 +592,14 @@ class ItemPanel(QWidget):
 
     def _on_font(self, _index: int) -> None:
         data = self.font_combo.currentData()
-        if data is None:  # eigene Schriftdatei
-            path, _ = QFileDialog.getOpenFileName(self, "Schrift wählen", "",
-                                                  "Schriften (*.ttf *.otf)")
+        if data is None:  # installierte Schrift oder Schriftdatei
+            current = self.items[0].text.font if self.items and self.items[0].text else None
+            path = FontDialog.choose(self, current, self.text.toPlainText())
             if not path:
                 self._load()
                 return
             if self.font_combo.findData(path) < 0:
-                self.font_combo.insertItem(self.font_combo.count() - 1, Path(path).stem, path)
+                self.font_combo.insertItem(self.font_combo.count() - 1, font_label(path), path)
             self.font_combo.setCurrentIndex(self.font_combo.findData(path))
             data = path
         self._apply_text("font", data)
@@ -685,7 +686,7 @@ class ItemPanel(QWidget):
             self._load_position()
             font_idx = self.font_combo.findData(ov.font)
             if font_idx < 0:
-                self.font_combo.insertItem(self.font_combo.count() - 1, Path(ov.font).stem,
+                self.font_combo.insertItem(self.font_combo.count() - 1, font_label(ov.font),
                                            ov.font)
                 font_idx = self.font_combo.findData(ov.font)
             self.font_combo.setCurrentIndex(font_idx)
