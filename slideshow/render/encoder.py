@@ -104,7 +104,9 @@ def probe_command(encoder: str, workdir: Path) -> list[str]:
 
 
 def probe_encoder(encoder: str) -> bool:
-    with tempfile.TemporaryDirectory(prefix="flashback-probe-") as tmp:
+    # Wird das Programm während der Probe beendet, kann ffmpeg die Dateien noch kurz
+    # sperren; ein liegengebliebener Temp-Ordner ist dann harmlos
+    with tempfile.TemporaryDirectory(prefix="flashback-probe-", ignore_cleanup_errors=True) as tmp:
         try:
             res = subprocess.run(probe_command(encoder, Path(tmp)), capture_output=True,
                                  timeout=180, creationflags=CREATIONFLAGS, check=False)

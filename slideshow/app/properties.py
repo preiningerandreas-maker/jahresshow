@@ -40,7 +40,15 @@ from slideshow.core.importer import (
     open_photo,
 )
 from slideshow.core.photoedit import rotate_crop, rotate_image
-from slideshow.core.project import MAX_TEXT_FADE, Item, Project, TextOverlay, readable_text
+from slideshow.core.project import (
+    MAX_DUCK,
+    MAX_TEXT_FADE,
+    MAX_VOLUME,
+    Item,
+    Project,
+    TextOverlay,
+    readable_text,
+)
 from slideshow.core.videotrim import set_trim, trim_end
 
 FIT_LABELS = {
@@ -71,6 +79,26 @@ PRESET_POINTS = {"top": (0.5, 0.12), "center": (0.5, 0.5), "bottom": (0.5, 0.88)
 BUNDLED_FONT = "Noto Sans"
 OTHER_FONT = "Andere Schrift wählen …"
 DEFAULT_TEXT = TextOverlay("")
+
+
+class MixedCheckBox(QCheckBox):
+    """Haken, der bei mehreren Elementen „teils/teils“ zeigen kann. Ein Klick darauf schaltet
+    alle ein; erst der nächste Klick schaltet alle aus."""
+
+    def set_values(self, values: list[bool]) -> None:
+        mixed = len(set(values)) > 1
+        self.setTristate(mixed)
+        if mixed:
+            self.setCheckState(Qt.CheckState.PartiallyChecked)
+        else:
+            self.setChecked(bool(values) and values[0])
+
+    def nextCheckState(self) -> None:
+        if self.checkState() == Qt.CheckState.PartiallyChecked:
+            self.setTristate(False)
+            self.setCheckState(Qt.CheckState.Checked)
+        else:
+            super().nextCheckState()
 
 
 class ColorButton(QPushButton):
@@ -148,6 +176,8 @@ class ItemPanel(QWidget):
         self.project: Project | None = None
         self.items: list[Item] = []
         self._loading = False
+        # Hat das Video eine Tonspur? Liefert das Hauptfenster (aus der Zeitleiste)
+        self.has_track: Callable[[Item], bool] = lambda it: it.kind == "video"
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -198,9 +228,23 @@ class ItemPanel(QWidget):
         self.clip_info = QLabel("")
         self.clip_info.setObjectName("hint")
         form.addRow(self.clip_info)
-        self.audio = QCheckBox("Originalton verwenden")
-        self.audio.setToolTip("Ton des Videos abspielen. Die Musik wird währenddessen leiser.")
+        self.audio = MixedCheckBox("Originalton verwenden")
+        self.audio.setToolTip("Ton des Videos abspielen. Die Musik wird währenddessen leiser. "
+                              "Ein Strich bedeutet: nur bei einem Teil der markierten Videos.")
         form.addRow(self.audio)
+        self.volume = QSpinBox()
+        self.volume.setRange(0, round(MAX_VOLUME * 100))
+        self.volume.setSingleStep(10)
+        self.volume.setSuffix(" %")
+        self.volume.setKeyboardTracking(False)
+        self.volume.setToolTip("Lautstärke des Originaltons. 100 % = wie aufgenommen; über "
+                               "100 % wird lauter, kann aber übersteuern.")
+        self.volume_label = QLabel("Lautstärke")
+        form.addRow(self.volume_label, self.volume)
+        self.audio_note = QLabel("")
+        self.audio_note.setObjectName("propertiesHint")
+        self.audio_note.setWordWrap(True)
+        form.addRow(self.audio_note)
         self.fit = combo()
         for key, label in FIT_LABELS.items():
             self.fit.addItem(label, key)
@@ -327,8 +371,9 @@ class ItemPanel(QWidget):
             lambda v: self._apply(lambda it: setattr(it, "duration", v or None)))
         self.start.valueChanged.connect(lambda v: self._trim(start=v))
         self.end.valueChanged.connect(lambda v: self._trim(end=v))
-        self.audio.toggled.connect(
-            lambda v: self._apply(lambda it: setattr(it, "audio", v), kinds=("video",)))
+        self.audio.checkStateChanged.connect(self._on_audio)
+        self.volume.valueChanged.connect(
+            lambda v: self._apply_sound(lambda it: setattr(it, "volume", v / 100)))
         self.use_damaged.toggled.connect(self._on_use_damaged)
         self.fit.currentIndexChanged.connect(
             lambda _i: self._apply(lambda it: setattr(it, "fit", self.fit.currentData()),
@@ -368,6 +413,37 @@ class ItemPanel(QWidget):
                 fn(it)
         self._refresh_header()
         self.changed.emit()
+
+    def _apply_sound(self, fn: Callable[[Item], None]) -> None:
+        """Nur Videos mit Tonspur; bei den anderen gibt es nichts einzustellen."""
+        self._apply(lambda it: fn(it) if self.has_track(it) else None, kinds=("video",))
+
+    def _on_audio(self, state: Qt.CheckState) -> None:
+        if state == Qt.CheckState.PartiallyChecked:
+            return
+        on = state == Qt.CheckState.Checked
+        self._apply_sound(lambda it: setattr(it, "audio", on))
+        self.volume.setEnabled(on)
+
+    def _load_sound(self) -> None:
+        """Haken (an, aus, teils/teils), Lautstärke und Hinweis auf Videos ohne Ton."""
+        videos = [it for it in self.items if it.kind == "video"]
+        tracks = [it for it in videos if self.has_track(it)]
+        self.audio.setEnabled(bool(tracks))
+        self.audio.set_values([it.audio for it in tracks])
+        self.volume.setValue(round(tracks[0].volume * 100) if tracks else 100)
+        self.volume.setEnabled(self.audio.checkState() != Qt.CheckState.Unchecked)
+        silent = len(videos) - len(tracks)
+        if not silent:
+            note = ""
+        elif not tracks:
+            note = ("Dieses Video hat keinen Ton." if len(videos) == 1
+                    else "Die markierten Videos haben keinen Ton.")
+        else:
+            note = (f"{silent} der {len(videos)} markierten Videos haben keinen Ton, für sie "
+                    "ändert sich nichts.")
+        self.audio_note.setText(note)
+        self.audio_note.setVisible(bool(note))
 
     def _clip_length(self, it: Item) -> float:
         """Länge des Original-Videos in Sekunden; 0, wenn sie nicht lesbar ist."""
@@ -652,8 +728,10 @@ class ItemPanel(QWidget):
             self.title_box.setVisible(bool(items) and kinds == {"title"})
             has_video = "video" in kinds
             for w in (self.start, self.start_label, self.end, self.end_label,
-                      self.clip_info, self.audio):
+                      self.clip_info, self.audio, self.volume,
+                      self.volume_label):
                 w.setVisible(has_video)
+            self._load_sound()
             only_video = kinds == {"video"}
             self.duration.setVisible(not only_video)
             self.duration_label.setVisible(not only_video)
@@ -673,7 +751,6 @@ class ItemPanel(QWidget):
             it = items[0]
             self.duration.setValue(it.duration or 0.0)
             self._load_trim()
-            self.audio.setChecked(it.audio)
             self.fit.setCurrentIndex(max(0, self.fit.findData(it.fit)))
             self.transition.setCurrentIndex(max(0, self.transition.findData(it.transition)))
             self.transition_duration.setValue(it.transition_duration or 0.0)
@@ -739,6 +816,14 @@ class ProjectPanel(QWidget):
         self.text_color = ColorButton("Standard-Textfarbe")
         self.text_color.setToolTip("Textfarbe für alle Texte, die keine eigene Farbe haben")
         form.addRow("Schriftfarbe", self.text_color)
+        self.duck = QSpinBox()
+        self.duck.setRange(0, round(MAX_DUCK * 100))
+        self.duck.setSuffix(" %")
+        self.duck.setKeyboardTracking(False)
+        self.duck.setToolTip("Lautstärke der Musik, solange ein Video mit Originalton läuft "
+                             "(für alle Videos der Show gleich). Sie wird sanft abgesenkt und "
+                             "danach wieder angehoben.")
+        form.addRow("Musik bei Originalton", self.duck)
         self.chapters = QCheckBox("Zwischentitel für jeden Monat")
         self.chapters.setToolTip("Vor jedem neuen Monat erscheint ein Titel wie „März 2026“. "
                                  "Den Text können Sie in der Zeitleiste anklicken und ändern.")
@@ -765,6 +850,8 @@ class ProjectPanel(QWidget):
             lambda v: self._set(lambda p: setattr(p.settings, "text_size", v)))
         self.text_color.colorChanged.connect(
             lambda c: self._set(lambda p: setattr(p.settings, "text_color", c)))
+        self.duck.valueChanged.connect(
+            lambda v: self._set(lambda p: setattr(p.music, "duck_volume", v / 100)))
         self.chapters.toggled.connect(self._on_chapters)
 
     def _set(self, fn: Callable[[Project], None]) -> None:
@@ -788,6 +875,7 @@ class ProjectPanel(QWidget):
             self.transition_duration.setValue(s.transition_duration)
             self.text_size.setValue(s.text_size)
             self.text_color.set_color(s.text_color)
+            self.duck.setValue(round(project.music.duck_volume * 100))
             self.chapters.setChecked(s.chapters)
             self.resolution.setCurrentIndex(max(0, self.resolution.findData(s.resolution)))
         finally:

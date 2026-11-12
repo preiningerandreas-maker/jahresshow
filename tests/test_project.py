@@ -77,6 +77,8 @@ def test_unknown_fields_ignored(tmp_path: Path) -> None:
         {"kind": "photo", "path": "a.jpg", "fit": "stretch"},
         {"kind": "photo", "path": "a.jpg", "transition": "spin"},
         {"kind": "photo", "path": "a.jpg", "duration": 0},
+        {"kind": "video", "path": "a.mp4", "volume": -0.1},
+        {"kind": "video", "path": "a.mp4", "volume": 2.5},
         {"kind": "title", "text": {"text": "x", "position": "left"}},
     ],
 )
@@ -121,3 +123,18 @@ def test_demo_project_content() -> None:
     assert any(set("äöüÄÖÜß") & set(t) for t in texts)
     assert p.settings.transition == "fade"
     assert len(p.music.tracks) == 2
+
+
+def test_duck_volume_default_range_and_old_projects(tmp_path) -> None:  # noqa: ANN001
+    from slideshow.core.project import DEFAULT_DUCK, MAX_DUCK, Music
+
+    assert DEFAULT_DUCK == 0.2 and MAX_DUCK == 0.5
+    assert Music().duck_volume == 0.2
+    assert Music(duck_volume=0.8).duck_volume == 0.5  # alter Wert über 50 % wird begrenzt
+    assert Music(duck_volume=0.25).duck_volume == 0.25  # alter Standard bleibt
+    path = tmp_path / "alt.json"
+    path.write_text('{"schema_version": 1, "name": "x", "items": [], '
+                    '"music": {"duck_volume": 1.0}}', encoding="utf-8")
+    assert Project.load(path).music.duck_volume == 0.5
+    path.write_text('{"schema_version": 1, "name": "x", "items": []}', encoding="utf-8")
+    assert Project.load(path).music.duck_volume == 0.2

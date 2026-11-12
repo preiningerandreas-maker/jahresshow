@@ -28,6 +28,10 @@ MAX_TEXT_FADE = 2.0
 ROTATIONS = (0, 90, 180, 270)
 RESOLUTIONS = {"1080p": (1920, 1080), "2160p": (3840, 2160)}
 PREVIEW_SIZE = (854, 480)
+MAX_VOLUME = 2.0  # Originalton höchstens doppelt so laut
+# Musiklautstärke unter Originalton: Standard 20 % (ca. -14 dB), Regler 0 bis 50 %
+DEFAULT_DUCK = 0.2
+MAX_DUCK = 0.5
 # Beschädigte Bilder: „trotzdem verwenden“ nur, wenn mindestens dieser Anteil lesbar ist
 DAMAGE_USABLE_MIN = 0.8
 # Ab diesem Anteil gilt ein Bild als nur leicht beschädigt und wird automatisch verwendet
@@ -133,7 +137,7 @@ class Item:
     transition_duration: float | None = None
     background: str = "#1E2A3A"  # Titelkarte ohne Foto
     audio: bool = True  # Originalton eines Videos verwenden
-    volume: float = 1.0
+    volume: float = 1.0  # Lautstärke des Originaltons, 1.0 = unverändert
     chapter: str | None = None  # Kapitel "JJJJ-MM"; Titel mit Kapitel = Zwischentitel
     taken: str | None = None  # Aufnahmedatum ISO 8601, für die Kapitel
     damage: str | None = None  # Bilddaten beschädigt (Grund); None = in Ordnung
@@ -176,6 +180,8 @@ class Item:
             raise ValueError(f"Unbekannter Übergang: {self.transition!r}")
         if self.duration is not None and self.duration <= 0:
             raise ValueError("Anzeigedauer muss größer als 0 sein")
+        if not 0.0 <= self.volume <= MAX_VOLUME:
+            raise ValueError(f"Lautstärke muss zwischen 0 und {MAX_VOLUME * 100:.0f} % liegen")
         if self.rotation not in ROTATIONS:
             raise ValueError(f"Drehung muss 0, 90, 180 oder 270 Grad sein: {self.rotation!r}")
         if self.crop is not None:
@@ -188,11 +194,15 @@ class Item:
 class Music:
     tracks: list[str] = field(default_factory=list)
     volume: float = 1.0
-    duck_volume: float = 0.25  # Musiklautstärke während Clips mit Originalton
+    duck_volume: float = DEFAULT_DUCK  # Musiklautstärke während Clips mit Originalton
     fade_out: float = 3.0
     # Ausschnitt pro Musikstück: Pfad wie in "tracks" -> [Start, Ende] in Sekunden.
     # Ende None = bis zum Ende der Datei. Stücke ohne Eintrag laufen ganz.
     trims: dict[str, list[float | None]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # Alte Projekte: Werte über dem Reglerbereich (bis 100 %) werden auf 50 % begrenzt
+        self.duck_volume = min(max(self.duck_volume, 0.0), MAX_DUCK)
 
     def trim_of(self, track: str) -> tuple[float, float | None]:
         start, end = self.trims.get(track) or (0.0, None)

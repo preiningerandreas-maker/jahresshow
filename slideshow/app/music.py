@@ -117,12 +117,6 @@ class MusicPanel(QWidget):
         self.volume.setSuffix(" %")
         self.volume.setKeyboardTracking(False)
         form.addRow("Musik", self.volume)
-        self.duck = QSpinBox()
-        self.duck.setRange(0, 100)
-        self.duck.setSuffix(" %")
-        self.duck.setKeyboardTracking(False)
-        self.duck.setToolTip("Lautstärke der Musik, solange ein Video mit Originalton läuft")
-        form.addRow("Bei Videos mit Ton", self.duck)
         self.fade = QSpinBox()
         self.fade.setRange(0, 30)
         self.fade.setSuffix(" s")
@@ -136,7 +130,6 @@ class MusicPanel(QWidget):
         self.up_button.clicked.connect(lambda: self._move(-1))
         self.down_button.clicked.connect(lambda: self._move(1))
         self.volume.valueChanged.connect(lambda v: self._set("volume", v / 100))
-        self.duck.valueChanged.connect(lambda v: self._set("duck_volume", v / 100))
         self.fade.valueChanged.connect(lambda v: self._set("fade_out", float(v)))
         self.list.itemSelectionChanged.connect(self._load_trim)
         self.trim_start.valueChanged.connect(self._on_trim)
@@ -150,7 +143,6 @@ class MusicPanel(QWidget):
         try:
             m = project.music
             self.volume.setValue(round(m.volume * 100))
-            self.duck.setValue(round(m.duck_volume * 100))
             self.fade.setValue(round(m.fade_out))
             self._fill()
         finally:

@@ -26,6 +26,10 @@ from slideshow.render.text import font_file, save_text_png
 
 SAMPLE_RATE = 48000
 SAMPLES_PER_FRAME = SAMPLE_RATE // FPS  # 1600, dadurch sind Ton und Bild immer gleich lang
+# Ton der Zwischendateien (Segmente, Abschnitte): überall gleich, sonst scheitert das
+# Aneinanderhängen. Ohne festes Format wird Ton nach dem Lautstärkefilter 24 Bit, Stille
+# 16 Bit („switching bps mid-stream is not supported“)
+INTERMEDIATE_AUDIO = ["-c:a", "flac", "-sample_fmt", "s16"]
 
 
 @dataclass(frozen=True)
@@ -125,6 +129,7 @@ def segment_key(project: Project, entry: TimelineEntry, cfg: RenderConfig) -> st
         "frames": entry.frames,
         "size": [cfg.width, cfg.height],
         "encoder": encoder_args(cfg.encoder, cfg.height, intermediate=True),
+        "audio": INTERMEDIATE_AUDIO,
         **_picture_key_data(project, entry.item, cfg.cache_dir),
     })
 
@@ -346,7 +351,7 @@ def render_segment(
         "-map", "[v]", "-map", "[a]",
         "-frames:v", str(n),
         *encoder_args(cfg.encoder, cfg.height, intermediate=True),
-        "-c:a", "flac",
+        *INTERMEDIATE_AUDIO,
         str(tmp),
     ]
     try:

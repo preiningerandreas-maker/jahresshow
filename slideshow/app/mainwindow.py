@@ -51,11 +51,14 @@ from slideshow.app.still import StillPreview
 from slideshow.app.tasks import Task, VideoPrep
 from slideshow.app.theme import apply_theme, dark_title_bar
 from slideshow.app.timeline import (
+    NO_TRACK_TEXT,
+    SOUND_ON,
     ZOOM_MAX,
     ZOOM_MIN,
     ThumbLoader,
     TimelineModel,
     TimelineView,
+    item_label,
 )
 from slideshow.core.chapters import apply_chapters, is_chapter_title, media_items
 from slideshow.core.edit import merge_by_date, sort_by_date
@@ -70,6 +73,7 @@ from slideshow.core.importer import (
     find_existing_duplicates,
     import_media,
     media_kind,
+    video_info,
 )
 from slideshow.core.project import FPS, RESOLUTIONS, Item, Project, TextOverlay
 from slideshow.core.thumbs import ThumbProcessPool
@@ -268,6 +272,7 @@ class MainWindow(QMainWindow):
         self.timeline.setModel(self.model)
 
         self.item_panel = ItemPanel()
+        self.item_panel.has_track = self.model.has_track
         self.project_panel = ProjectPanel()
         self.music_panel = MusicPanel()
         self.tabs = QTabWidget()
@@ -509,6 +514,7 @@ class MainWindow(QMainWindow):
         self.timeline.selectionModel().selectionChanged.connect(self._on_selection)
         self.timeline.filesDropped.connect(self.on_files_dropped)
         self.timeline.deleteRequested.connect(self.remove_selected)
+        self.timeline.soundToggled.connect(self.toggle_sound)
         self.model.rowsMovedByUser.connect(lambda _rows: self.mark_dirty())
         self.item_panel.changed.connect(self._on_item_changed)
         self.project_panel.changed.connect(self._on_project_changed)
@@ -741,6 +747,34 @@ class MainWindow(QMainWindow):
         self._show_still()
         self.mark_dirty()
 
+    def toggle_sound(self, row: int) -> None:
+        """Lautsprecher-Symbol in der Zeitleiste: Originalton nur dieses Clips umschalten."""
+        item = self.project.items[row]
+        if item.kind != "video":
+            return
+        if not self.model.has_track(item):
+            self.statusBar().showMessage(f"{item_label(item)}: {NO_TRACK_TEXT}.", 5000)
+            return
+        if self.model.sound(item) == SOUND_ON:
+            item.audio = False
+        else:
+            item.audio = True
+            if item.volume <= 0:  # sonst bliebe der Clip trotz Haken stumm
+                item.volume = 1.0
+        self.model.refresh_rows([row])
+        if row in self.timeline.selected_rows():
+            self.item_panel.set_items(self.project, self.selected_items())
+        self.mark_dirty()
+
+    def _learn_silent(self, silent: set[Path], checked: set[Path]) -> None:
+        """Ergebnis der Tonspur-Prüfung übernehmen; Kacheln und Eigenschaften neu zeichnen."""
+        new = (self.model.silent - checked) | silent
+        if new == self.model.silent:
+            return
+        self.model.silent = new
+        self.model.refresh_rows(None)
+        self.item_panel.set_items(self.project, self.selected_items())
+
     def _on_project_changed(self) -> None:
         self.model.refresh_rows(None)
         # Der Projektstandard (Schrift) wirkt auf markierte Texte: Anzeige und Standbild auffrischen
@@ -937,6 +971,9 @@ class MainWindow(QMainWindow):
         for m in media:
             if m.kind == "video" and m.duration is not None:
                 self.model.clip_seconds[m.path.resolve()] = m.duration
+        videos = {m.path.resolve() for m in media if m.kind == "video"}
+        self._learn_silent({m.path.resolve() for m in media
+                            if m.kind == "video" and not m.has_audio}, videos)
         new_items = media_items(media)
         chosen = {id(it) for it in new_items}
         items = merge_by_date(self.project.items, new_items)
@@ -1016,23 +1053,27 @@ class MainWindow(QMainWindow):
         gen = self._duration_gen
         snap = self._snapshot()
 
-        def run(_task: Task) -> tuple[int, float, dict[Path, float]]:
+        def run(_task: Task) -> tuple[int, float, dict[Path, float], set[Path]]:
             clips: dict[Path, float] = {}
+            silent: set[Path] = set()
             for it in snap.items:
                 if it.kind == "video" and it.path:
                     src = snap.resolve(it.path)
                     clips[src] = clip_length(src)
-            return gen, snap.total_frames(clip_length) / FPS, clips
+                    if not video_info(src).has_audio:
+                        silent.add(src)
+            return gen, snap.total_frames(clip_length) / FPS, clips, silent
 
         task = Task(run, "duration", self)
         task.done.connect(self._on_duration)
         task.failed.connect(lambda e: self._on_duration_failed(gen, e))
         self._duration_task = task.start()
 
-    def _on_duration(self, data: tuple[int, float, dict[Path, float]]) -> None:
-        gen, seconds, clips = data
+    def _on_duration(self, data: tuple[int, float, dict[Path, float], set[Path]]) -> None:
+        gen, seconds, clips, silent = data
         if gen != self._duration_gen:
             return
+        self._learn_silent(silent, set(clips))
         self.total_seconds = seconds
         new = {k: v for k, v in clips.items() if self.model.clip_seconds.get(k) != v}
         if new:

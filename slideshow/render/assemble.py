@@ -63,7 +63,12 @@ from slideshow.render.encoder import (
     is_hardware,
     remember_failure,
 )
-from slideshow.render.segment import SAMPLES_PER_FRAME, RenderConfig, render_segment
+from slideshow.render.segment import (
+    INTERMEDIATE_AUDIO,
+    SAMPLES_PER_FRAME,
+    RenderConfig,
+    render_segment,
+)
 
 log = logging.getLogger(__name__)
 
@@ -546,6 +551,7 @@ def render_project(
             "parts": [[p.skip, p.head, p.entry.transition, p.entry.transition_frames]
                       for p in block.parts],
             "encoder": final_args,
+            "audio": INTERMEDIATE_AUDIO,
         })
         out = block_dir / f"{key}.mp4"
         if out.is_file():
@@ -564,7 +570,7 @@ def render_project(
             run_ffmpeg([*args, "-filter_complex", block_graph(block),
                         "-map", "[vout]", "-map", "[aout]",
                         "-frames:v", str(block.frames), *final_args,
-                        "-c:a", "flac", str(tmp)],
+                        *INTERMEDIATE_AUDIO, str(tmp)],
                        progress=blk_progress, cancel=cancel)
             commit_tmp(tmp, out)
         finally:

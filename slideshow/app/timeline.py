@@ -40,6 +40,7 @@ from PySide6.QtGui import (
     QFont,
     QImage,
     QKeyEvent,
+    QMouseEvent,
     QPainter,
     QPainterPath,
     QPalette,
@@ -77,6 +78,12 @@ SCROLL_PAUSE = 0.15  # Sekunden ohne Nachladen nach jeder Scrollbewegung
 KIND_LABELS = {"photo": "Foto", "video": "Video", "title": "Titel"}
 DAMAGED_TEXT = "beschädigt"
 MINOR_DAMAGE_TIP = "Datei leicht beschädigt, vollständig lesbar"
+# Originalton eines Videos: an, aus oder keine Tonspur in der Datei
+SOUND_ON, SOUND_OFF, SOUND_NONE = "on", "off", "none"
+SOUND_ICONS = {SOUND_ON: ("speaker_2", "text"), SOUND_OFF: ("speaker_mute", "text"),
+               SOUND_NONE: ("speaker_off", "muted")}
+NO_TRACK_TEXT = "Video hat keinen Ton"
+SOUND_CLICK_TIP = "Klick auf das Lautsprecher-Symbol schaltet den Originalton um"
 # Bildinhalt wie im Export (keine Theme-Farben): schwarze Ränder, Abdunkeln bei blur,
 # weißer Titeltext auf der Titelfarbe des Nutzers
 BLACK = QColor("#000000")
@@ -99,6 +106,10 @@ def format_seconds(seconds: float) -> str:
     return f"{seconds:.1f}".replace(".", ",") + " s"
 
 
+def format_percent(value: float) -> str:
+    return f"{round(value * 100)} %"
+
+
 @dataclass(slots=True)
 class Tile:
     """Alles, was eine Kachel zum Zeichnen braucht (einmal berechnet, dann gecacht)."""
@@ -113,6 +124,7 @@ class Tile:
     background: str
     thumb_key: str | None  # Pfad des Vorschaubilds, None bei Titeln ohne Foto
     fit: str  # Formatmodus blur | black | crop
+    sound: str  # Videos: SOUND_ON | SOUND_OFF | SOUND_NONE, sonst leer
 
 
 class ThumbLoader(QObject):
@@ -223,6 +235,7 @@ class TimelineModel(QAbstractListModel):
         self.project = project
         self.loader = loader
         self.clip_seconds: dict[Path, float] = {}  # bekannte Videolängen
+        self.silent: set[Path] = set()  # Videos ohne Tonspur
         self.duplicates: set[Path] = set()
         self.reorder: Callable[[list[Item]], list[Item]] = lambda items: items
         self._pixmaps: OrderedDict[str, QPixmap] = OrderedDict()
@@ -262,6 +275,17 @@ class TimelineModel(QAbstractListModel):
             src = self._resolved[item.path] = self.project.resolve(item.path)
         return src
 
+    def has_track(self, item: Item) -> bool:
+        """Video mit Tonspur. Solange die Datei nicht geprüft ist, gilt sie als mit Ton."""
+        return item.kind == "video" and self.thumb_source(item) not in self.silent
+
+    def sound(self, item: Item) -> str:
+        if item.kind != "video":
+            return ""
+        if not self.has_track(item):
+            return SOUND_NONE
+        return SOUND_ON if item.audio and item.volume > 0 else SOUND_OFF
+
     def tile(self, row: int) -> Tile:
         """Kacheldaten der Zeile; schneller Weg für den Delegate (ohne Qt-Rollen)."""
         t = self._tiles.get(row)
@@ -272,7 +296,7 @@ class TimelineModel(QAbstractListModel):
             t = Tile(item_label(item), self.subtitle(item), item.kind, is_chapter_title(item),
                      src is not None and src in self.duplicates,
                      item.damage is not None and not item.damage_minor, item.damage_minor,
-                     item.background, key, item.fit)
+                     item.background, key, item.fit, self.sound(item))
             self._tiles[row] = t
         return t
 
@@ -337,6 +361,13 @@ class TimelineModel(QAbstractListModel):
             lines.append(f"Aufgenommen: {item.taken.replace('T', ' ')}")
         if item.text and item.text.text.strip() and item.kind != "title":
             lines.append(f"Text: {item.text.text.strip()}")
+        sound = self.sound(item)
+        if sound == SOUND_NONE:
+            lines.append(NO_TRACK_TEXT)
+        elif sound:
+            lines.append(f"Originalton: an, {format_percent(item.volume)}" if sound == SOUND_ON
+                         else "Originalton: aus")
+            lines.append(SOUND_CLICK_TIP)
         src = self.thumb_source(item)
         if src is not None and src in self.duplicates:
             lines.append("Doppelt vorhanden (gleicher Inhalt wie eine andere Datei)")
@@ -504,6 +535,17 @@ class TileDelegate(QStyledItemDelegate):
                  index: QModelIndex | QPersistentModelIndex) -> QSize:
         return self.tile_size(option.fontMetrics.height())  # type: ignore[attr-defined]
 
+    def thumb_rect(self, rect: QRect) -> QRect:
+        """Vorschaubild innerhalb der Kachel."""
+        r = rect.adjusted(4, 4, -4, -4)
+        return QRect(r.x() + (r.width() - self.thumb_w) // 2, r.y() + 4, self.thumb_w,
+                     self.thumb_h)
+
+    def sound_rect(self, rect: QRect) -> QRect:
+        """Lautsprecher-Symbol unten rechts im Vorschaubild; ein Klick schaltet den Ton um."""
+        thumb = self.thumb_rect(rect)
+        return QRect(thumb.right() - 29, thumb.bottom() - 22, 26, 18)
+
     def paint(self, painter: QPainter, option: QStyleOptionViewItem,
               index: QModelIndex | QPersistentModelIndex) -> None:
         model = index.model()
@@ -517,8 +559,7 @@ class TileDelegate(QStyledItemDelegate):
         r: QRect = option.rect.adjusted(4, 4, -4, -4)  # type: ignore[attr-defined]
         pal: QPalette = option.palette  # type: ignore[attr-defined]
 
-        tw, th = self.thumb_w, self.thumb_h
-        thumb = QRect(r.x() + (r.width() - tw) // 2, r.y() + 4, tw, th)
+        thumb = self.thumb_rect(option.rect)  # type: ignore[attr-defined]
         if pm is not None:
             paint_fit(painter, thumb, pm, tile.fit, lambda: model.blur_pixmap(tile, pm))
         elif tile.kind == "title" and tile.thumb_key is None:
@@ -545,6 +586,12 @@ class TileDelegate(QStyledItemDelegate):
             cx, cy = badge.center().x(), badge.center().y()
             painter.drawPolygon(QPolygonF([QPointF(cx - 4, cy - 5), QPointF(cx - 4, cy + 5),
                                            QPointF(cx + 5, cy)]))
+            # Lautsprecher: Originalton an, aus oder keine Tonspur
+            name, tone = SOUND_ICONS[tile.sound]
+            painter.setBrush(color("bg", 220))
+            badge = self.sound_rect(option.rect)  # type: ignore[attr-defined]
+            painter.drawRoundedRect(badge, 3, 3)
+            painter.drawPixmap(badge.x() + 6, badge.y() + 2, icon(name, tone).pixmap(14, 14))
         if tile.damaged:
             # Warnsymbol und Text oben links (Farbe neutral, wie die übrigen Hinweise)
             fm = option.fontMetrics  # type: ignore[attr-defined]
@@ -593,6 +640,7 @@ class TimelineView(QListView):
 
     filesDropped = Signal(list)  # list[str]
     deleteRequested = Signal()
+    soundToggled = Signal(int)  # Zeile: Lautsprecher-Symbol eines Videos angeklickt
     zoomChanged = Signal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -736,6 +784,26 @@ class TimelineView(QListView):
             event.accept()
             return
         event.ignore()
+
+    def sound_hit(self, pos: QPoint) -> int | None:
+        """Zeile des Videos, dessen Lautsprecher-Symbol an pos liegt."""
+        index = self.indexAt(pos)
+        delegate = self.itemDelegate()
+        if (not index.isValid() or not isinstance(delegate, TileDelegate)
+                or self.timeline_model().tile(index.row()).kind != "video"):
+            return None
+        return index.row() if delegate.sound_rect(self.visualRect(index)).contains(pos) else None
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        # Klick aufs Symbol schaltet nur diesen Clip um und ändert die Auswahl nicht
+        if (event.button() == Qt.MouseButton.LeftButton
+                and event.modifiers() == Qt.KeyboardModifier.NoModifier):
+            row = self.sound_hit(event.position().toPoint())
+            if row is not None:
+                self.soundToggled.emit(row)
+                event.accept()
+                return
+        super().mousePressEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Delete:
