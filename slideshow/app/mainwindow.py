@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from slideshow import APP_NAME, COPYRIGHT, __version__
+from slideshow import APP_NAME, COPYRIGHT, VERSION_TEXT, __version__
 from slideshow.app.activity import ActivityPanel, TaskRow
 from slideshow.app.icons import icon
 from slideshow.app.music import MusicPanel, format_minutes
@@ -129,7 +129,7 @@ def new_project() -> Project:
     year = date.today().year
     title = Item("title", duration=5.0,
                  text=TextOverlay(f"Jahresrückblick {year}", position="center", size=110,
-                                  bold=True, bar=False))
+                                  own_size=True, bold=True, bar=False))
     return Project(name=f"Jahresrückblick {year}", items=[title])
 
 
@@ -233,6 +233,8 @@ class MainWindow(QMainWindow):
         self.dirty = False
         self.total_seconds: float | None = None
         self._chapter_stash: dict[str, Item] = {}
+        # Rückgängig fürs Löschen: (Elemente, übersprungene Monate) vor dem Löschen
+        self._undo_stack: list[tuple[list[Item], list[str]]] = []
         self._import_task: Task | None = None
         self._render_task: Task | None = None
         self._duration_task: Task | None = None
@@ -358,6 +360,9 @@ class MainWindow(QMainWindow):
         zoom_label.setToolTip(tip)
         self.statusBar().addPermanentWidget(zoom_label)
         self.statusBar().addPermanentWidget(self.zoom)
+        self.version_label = QLabel(VERSION_TEXT)
+        self.version_label.setObjectName("versionLabel")
+        self.statusBar().addPermanentWidget(self.version_label)
         self.copyright_label = QLabel(COPYRIGHT)
         self.copyright_label.setObjectName("copyrightLabel")
         self.copyright_label.setToolTip(f"{APP_NAME} {__version__} – Hilfe → Über {APP_NAME}")
@@ -408,6 +413,13 @@ class MainWindow(QMainWindow):
             "Musik", self.on_add_music, None, "music_note_2", "Musikstücke hinzufügen")
         self.act_remove = self._action("Markierte entfernen", self.remove_selected, None,
                                        "delete")
+        self.act_undo = self._action("Löschen rückgängig", self.undo, "Ctrl+Z", None,
+                                     "Das zuletzt Gelöschte zurückholen")
+        self.act_undo.setEnabled(False)
+        self.act_restore_chapters = self._action(
+            "Zwischentitel wieder einsetzen", self.restore_chapters, None, None,
+            "Alle gelöschten Monats-Zwischentitel wieder anlegen")
+        self.act_restore_chapters.setEnabled(False)
         self.act_sort = self._action("Nach Aufnahmedatum sortieren", self.sort_by_date, None,
                                      "arrow_sort")
         self.act_preview = self._action(
@@ -428,7 +440,9 @@ class MainWindow(QMainWindow):
                   self.act_add_music):
             m.addAction(a)
         m.addSeparator()
+        m.addAction(self.act_undo)
         m.addAction(self.act_remove)
+        m.addAction(self.act_restore_chapters)
         m.addAction(self.act_sort)
         m = menu.addMenu("&Show")
         m.addAction(self.act_preview)
@@ -519,7 +533,7 @@ class MainWindow(QMainWindow):
 
     def about_text(self) -> str:
         return (f"<h3>{APP_NAME}</h3>"
-                f"<p>Version {__version__}</p>"
+                f"<p>{VERSION_TEXT}</p><p>Version {__version__}</p>"
                 "<p>Macht aus Fotos und Videos eine Slideshow mit Musik und Texten und "
                 "speichert sie als MP4-Video.</p>"
                 f"<p>{COPYRIGHT}</p>"
@@ -571,10 +585,14 @@ class MainWindow(QMainWindow):
         self.project = project
         self.project_path = path
         self._chapter_stash = {}
-        project.items = apply_chapters(project.items, project.settings.chapters)
+        self._undo_stack = []
+        self.act_undo.setEnabled(False)
+        project.items = apply_chapters(project.items, project.settings.chapters,
+                                       project.settings.skipped_chapters)
         self.model.duplicates = set()
         self.model.set_project(project)
         self.project_panel.set_project(project)
+        self._update_restore_action()
         self.music_panel.set_project(project)
         self.item_panel.set_items(project, [])
         self._show_still([])
@@ -587,7 +605,7 @@ class MainWindow(QMainWindow):
 
     def _update_title(self) -> None:
         name = self.project_path.name if self.project_path else "Neues Projekt"
-        self.setWindowTitle(f"{'*' if self.dirty else ''}{name} – {APP_NAME}")
+        self.setWindowTitle(f"{'*' if self.dirty else ''}{name} – {VERSION_TEXT}")
 
     def _update_empty_hint(self) -> None:
         has_media = any(it.kind != "title" for it in self.project.items)
@@ -690,7 +708,7 @@ class MainWindow(QMainWindow):
         if on:
             # Früher ausgeblendete (evtl. bearbeitete) Zwischentitel wieder verwenden
             items = list(self._chapter_stash.values()) + items
-        return apply_chapters(items, on)
+        return apply_chapters(items, on, self.project.settings.skipped_chapters)
 
     def set_chapters(self, on: bool) -> None:
         rows = self.timeline.selected_rows()
@@ -759,13 +777,18 @@ class MainWindow(QMainWindow):
 
     def _on_project_changed(self) -> None:
         self.model.refresh_rows(None)
+        # Der Projektstandard (Schrift) wirkt auf markierte Texte: Anzeige und Standbild auffrischen
+        items = self.selected_items()
+        self.item_panel.set_items(self.project, items)
+        self._show_still(items)
         self.mark_dirty()
 
     def add_title_card(self) -> None:
         rows = self.timeline.selected_rows()
         pos = rows[0] if rows else 0
         title = Item("title", duration=5.0, text=TextOverlay(
-            self.project.name or "Titel", position="center", size=110, bold=True, bar=False))
+            self.project.name or "Titel", position="center", size=110, own_size=True,
+            bold=True, bar=False))
         items = list(self.project.items)
         items.insert(pos, title)
         self.model.replace_items(self._apply_chapters(items))
@@ -776,16 +799,48 @@ class MainWindow(QMainWindow):
         rows = set(self.timeline.selected_rows())
         if not rows:
             return
-        if self.project.settings.chapters and all(
-                is_chapter_title(self.project.items[r]) for r in rows):
-            self.notice.show_message(
-                "Zwischentitel entstehen automatisch für jeden Monat. Abschalten können Sie "
-                "sie im Bereich „Show“ unter „Zwischentitel für jeden Monat“.", "info")
-            return
+        settings = self.project.settings
+        self._undo_stack.append((list(self.project.items), list(settings.skipped_chapters)))
+        self.act_undo.setEnabled(True)
+        # Gelöschter Monats-Zwischentitel: Monat merken, damit er nicht neu entsteht
+        for r in rows:
+            it = self.project.items[r]
+            if is_chapter_title(it) and it.chapter not in settings.skipped_chapters:
+                assert it.chapter is not None
+                settings.skipped_chapters.append(it.chapter)
         items = [it for i, it in enumerate(self.project.items) if i not in rows]
+        self.model.replace_items(self._apply_chapters(items))
+        self._update_restore_action()
+        self.item_panel.set_items(self.project, [])
+        self._show_still([])
+        self.mark_dirty()
+
+    def _update_restore_action(self) -> None:
+        self.act_restore_chapters.setEnabled(bool(self.project.settings.skipped_chapters))
+
+    def restore_chapters(self) -> None:
+        """Alle gelöschten Monats-Zwischentitel wieder anlegen."""
+        settings = self.project.settings
+        if not settings.skipped_chapters:
+            return
+        self._undo_stack.append((list(self.project.items), list(settings.skipped_chapters)))
+        self.act_undo.setEnabled(True)
+        settings.skipped_chapters = []
+        self.model.replace_items(self._apply_chapters(self.project.items))
+        self._update_restore_action()
+        self.mark_dirty()
+
+    def undo(self) -> None:
+        """Das letzte Löschen zurücknehmen (Strg+Z)."""
+        if not self._undo_stack:
+            return
+        items, skipped = self._undo_stack.pop()
+        self.project.settings.skipped_chapters = skipped
         self.model.replace_items(self._apply_chapters(items))
         self.item_panel.set_items(self.project, [])
         self._show_still([])
+        self.act_undo.setEnabled(bool(self._undo_stack))
+        self._update_restore_action()
         self.mark_dirty()
 
     def sort_by_date(self) -> None:

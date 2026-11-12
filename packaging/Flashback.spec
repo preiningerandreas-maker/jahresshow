@@ -13,7 +13,7 @@ from PyInstaller.utils.win32.versioninfo import (
     VSVersionInfo,
 )
 
-from slideshow import APP_NAME, AUTHOR, COPYRIGHT, __version__
+from slideshow import APP_NAME, AUTHOR, COPYRIGHT, RELEASE, __version__
 
 ROOT = Path(SPECPATH).parent  # noqa: F821 (von PyInstaller gesetzt)
 
@@ -30,7 +30,7 @@ VERSION = VSVersionInfo(
             StringStruct("LegalCopyright", COPYRIGHT),
             StringStruct("OriginalFilename", f"{APP_NAME}.exe"),
             StringStruct("ProductName", APP_NAME),
-            StringStruct("ProductVersion", __version__),
+            StringStruct("ProductVersion", f"{__version__} ({RELEASE})"),
         ])]),
         VarFileInfo([VarStruct("Translation", [0x0407, 1200])]),
     ],

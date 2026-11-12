@@ -40,7 +40,7 @@ def make_chapter_title(key: str) -> Item:
         duration=CHAPTER_DURATION,
         background=CHAPTER_BACKGROUND,
         text=TextOverlay(chapter_title(key), position="center", size=CHAPTER_TEXT_SIZE,
-                         bold=True, bar=False),
+                         own_size=True, bold=True, bar=False),
         chapter=key,
     )
 
@@ -55,12 +55,14 @@ def media_items(media: Iterable[MediaFile]) -> list[Item]:
     ]
 
 
-def apply_chapters(items: list[Item], enabled: bool = True) -> list[Item]:
+def apply_chapters(items: list[Item], enabled: bool = True,
+                   skipped: Iterable[str] = ()) -> list[Item]:
     """Zwischentitel neu setzen, passend zur aktuellen Reihenfolge (auch nach Drag & Drop).
 
     Elemente ohne Datum gehören zum Kapitel davor. Ein vom Nutzer geänderter Zwischentitel
     (Text, Dauer, Farbe) bleibt erhalten, solange es sein Kapitel noch gibt.
     """
+    skip = set(skipped)
     existing = {it.chapter: it for it in items if is_chapter_title(it)}
     body = [it for it in items if not is_chapter_title(it)]
 
@@ -72,7 +74,7 @@ def apply_chapters(items: list[Item], enabled: bool = True) -> list[Item]:
             continue
         key = chapter_key(datetime.fromisoformat(it.taken)) if it.taken else current
         if key is not None and key != current:
-            if enabled:
+            if enabled and key not in skip:
                 title = existing.pop(key, None) or make_chapter_title(key)
                 out.append(title)
             current = key

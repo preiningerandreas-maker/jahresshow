@@ -1,6 +1,7 @@
 Flashback
 =========
 
+Version 2.0, November 2026
 © 2026 Andreas Preininger
 
 Flashback macht aus Fotos und Videos eine Slideshow mit Musik und Texten und speichert sie

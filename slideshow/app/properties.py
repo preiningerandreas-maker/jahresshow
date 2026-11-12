@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
@@ -26,10 +27,29 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from slideshow.app.cropdialog import CropDialog
 from slideshow.app.fonts import FontDialog, font_label
+from slideshow.app.positionpad import PositionPad
 from slideshow.core.chapters import chapter_title, is_chapter_title
-from slideshow.core.importer import PHOTO_EXTS, describe_file
-from slideshow.core.project import MAX_VOLUME, Item, Project, TextOverlay, readable_text
+from slideshow.core.ffmpeg import FFmpegError
+from slideshow.core.importer import (
+    PHOTO_EXTS,
+    DamagedFile,
+    clip_length,
+    describe_file,
+    open_photo,
+)
+from slideshow.core.photoedit import rotate_crop, rotate_image
+from slideshow.core.project import (
+    MAX_DUCK,
+    MAX_TEXT_FADE,
+    MAX_VOLUME,
+    Item,
+    Project,
+    TextOverlay,
+    readable_text,
+)
+from slideshow.core.videotrim import set_trim, trim_end
 
 FIT_LABELS = {
     "blur": "Unscharfer Hintergrund",
@@ -45,9 +65,17 @@ TRANSITION_LABELS = {
     "fadeblack": "Über Schwarz blenden",
     "wipeleft": "Wischen",
     "slideleft": "Schieben",
+    "zoomin": "Zoom (Bild wird größer)",
+    "circleopen": "Kreis öffnen",
+    "radial": "Drehwischer",
+    "pixelize": "Pixel",
     "none": "Harter Schnitt",
 }
 POSITION_LABELS = {"top": "Oben", "center": "Mitte", "bottom": "Unten"}
+FREE_POSITION = "free"
+FREE_LABEL = "Frei (mit Kreuz)"
+# Wo die Voreinstellungen den Textblock ungefähr hinsetzen (Anzeige im Kreuz-Feld)
+PRESET_POINTS = {"top": (0.5, 0.12), "center": (0.5, 0.5), "bottom": (0.5, 0.88)}
 BUNDLED_FONT = "Noto Sans"
 OTHER_FONT = "Andere Schrift wählen …"
 DEFAULT_TEXT = TextOverlay("")
@@ -118,6 +146,12 @@ def combo() -> QComboBox:
     return c
 
 
+def length_text(seconds: float) -> str:
+    """„1:23 min“ oder „45 s“."""
+    m, s = divmod(round(seconds), 60)
+    return f"{m}:{s:02d} min" if m else f"{s} s"
+
+
 def _spin(lo: float, hi: float, step: float, suffix: str, special: str | None = None,
           decimals: int = 1) -> QDoubleSpinBox:
     s = QDoubleSpinBox()
@@ -180,11 +214,20 @@ class ItemPanel(QWidget):
         self.duration = _spin(0.0, 600.0, 0.5, " s", "Standard")
         self.duration.setToolTip("Wie lange das Element zu sehen ist. „Standard“: Fotos so "
                                  "lange wie im Projekt eingestellt, Videos in voller Länge.")
-        form.addRow("Anzeigedauer", self.duration)
+        self.duration_label = QLabel("Anzeigedauer")
+        form.addRow(self.duration_label, self.duration)
         self.start = _spin(0.0, 36000.0, 0.5, " s")
-        self.start.setToolTip("Ab welcher Stelle das Video abgespielt wird")
-        self.start_label = QLabel("Video ab")
+        self.start.setToolTip("Ab welcher Stelle des Videos abgespielt wird (Sekunden im Video)")
+        self.start_label = QLabel("Video von")
         form.addRow(self.start_label, self.start)
+        self.end = _spin(0.0, 36000.0, 0.5, " s", "Ende des Videos")
+        self.end.setToolTip("Bis zu welcher Stelle das Video abgespielt wird (Sekunden im "
+                            "Video). „Ende des Videos“: bis zum Schluss.")
+        self.end_label = QLabel("Video bis")
+        form.addRow(self.end_label, self.end)
+        self.clip_info = QLabel("")
+        self.clip_info.setObjectName("hint")
+        form.addRow(self.clip_info)
         self.audio = MixedCheckBox("Originalton verwenden")
         self.audio.setToolTip("Ton des Videos abspielen. Die Musik wird währenddessen leiser. "
                               "Ein Strich bedeutet: nur bei einem Teil der markierten Videos.")
@@ -209,6 +252,31 @@ class ItemPanel(QWidget):
         self.fit_label = QLabel("Bildformat")
         self.fit_label.setToolTip(FIT_HELP)
         form.addRow(self.fit_label, self.fit)
+        rot_row = QHBoxLayout()
+        self.rotate_left = QPushButton("↺ Links")
+        self.rotate_left.setToolTip("Foto um 90 Grad gegen den Uhrzeigersinn drehen")
+        self.rotate_right = QPushButton("Rechts ↻")
+        self.rotate_right.setToolTip("Foto um 90 Grad im Uhrzeigersinn drehen")
+        rot_row.addWidget(self.rotate_left)
+        rot_row.addWidget(self.rotate_right)
+        self.rotate_label = QLabel("Drehen")
+        form.addRow(self.rotate_label, rot_row)
+        self.rotate_state = QLabel("")
+        self.rotate_state.setObjectName("propertiesHint")
+        form.addRow(self.rotate_state)
+        crop_row = QHBoxLayout()
+        self.crop_button = QPushButton("Ausschnitt wählen …")
+        self.crop_button.setToolTip("Nur einen Teil des Fotos zeigen: fester Bildausschnitt, "
+                                    "ohne Zoom und Schwenk")
+        self.crop_clear = QPushButton("Ganzes Foto")
+        self.crop_clear.setToolTip("Den Ausschnitt entfernen")
+        crop_row.addWidget(self.crop_button)
+        crop_row.addWidget(self.crop_clear)
+        self.crop_label = QLabel("Ausschnitt")
+        form.addRow(self.crop_label, crop_row)
+        self.crop_state = QLabel("")
+        self.crop_state.setObjectName("propertiesHint")
+        form.addRow(self.crop_state)
         self.transition = combo()
         self.transition.addItem("Wie im Projekt", None)
         for key, label in TRANSITION_LABELS.items():
@@ -249,7 +317,10 @@ class ItemPanel(QWidget):
         self.position = combo()
         for key, label in POSITION_LABELS.items():
             self.position.addItem(label, key)
+        self.position.addItem(FREE_LABEL, FREE_POSITION)
         xform.addRow("Position", self.position)
+        self.pad = PositionPad()
+        xform.addRow(self.pad)
         self.font_combo = combo()
         self.font_combo.addItem(BUNDLED_FONT, BUNDLED_FONT)
         self.font_combo.addItem(OTHER_FONT, None)
@@ -265,6 +336,10 @@ class ItemPanel(QWidget):
         xform.addRow("Größe", size_row)
         self.color = ColorButton("Textfarbe")
         xform.addRow("Farbe", self.color)
+        self.use_default_style = QPushButton("Größe und Farbe wie im Projekt")
+        self.use_default_style.setToolTip(
+            "Dieser Text folgt wieder dem Standard aus „Ganze Show“ (Größe und Farbe)")
+        xform.addRow(self.use_default_style)
         self.bar = QCheckBox("Halbtransparenter Balken hinter dem Text")
         xform.addRow(self.bar)
         bar_row = QHBoxLayout()
@@ -277,6 +352,11 @@ class ItemPanel(QWidget):
         bar_row.addWidget(self.bar_color, 1)
         bar_row.addWidget(self.bar_opacity)
         xform.addRow("Balken", bar_row)
+        self.fade = _spin(0.0, MAX_TEXT_FADE, 0.25, " s", "Aus", decimals=2)
+        self.fade.setToolTip("Der Text blendet sanft ein und am Ende des Bildes wieder aus. "
+                             "Im Monitor ist der Text immer ganz zu sehen; die Blende zeigt "
+                             "die Vorschau und das fertige Video.")
+        xform.addRow("Ein-/Ausblenden", self.fade)
         outer.addWidget(self.text_box)
         outer.addStretch(1)
 
@@ -286,10 +366,11 @@ class ItemPanel(QWidget):
     # --- Verbindung zu den Elementen ---------------------------------------------------
 
     def _connect(self) -> None:
+        # Nur Videos markiert: die Länge steckt in „von/bis“, die Anzeigedauer ist dann ausgeblendet
         self.duration.valueChanged.connect(
             lambda v: self._apply(lambda it: setattr(it, "duration", v or None)))
-        self.start.valueChanged.connect(
-            lambda v: self._apply(lambda it: setattr(it, "start", v), kinds=("video",)))
+        self.start.valueChanged.connect(lambda v: self._trim(start=v))
+        self.end.valueChanged.connect(lambda v: self._trim(end=v))
         self.audio.checkStateChanged.connect(self._on_audio)
         self.volume.valueChanged.connect(
             lambda v: self._apply_sound(lambda it: setattr(it, "volume", v / 100)))
@@ -297,6 +378,10 @@ class ItemPanel(QWidget):
         self.fit.currentIndexChanged.connect(
             lambda _i: self._apply(lambda it: setattr(it, "fit", self.fit.currentData()),
                                    kinds=("photo", "video")))
+        self.rotate_left.clicked.connect(lambda: self._rotate(-90))
+        self.rotate_right.clicked.connect(lambda: self._rotate(90))
+        self.crop_button.clicked.connect(self._choose_crop)
+        self.crop_clear.clicked.connect(lambda: self._set_crop(None))
         self.transition.currentIndexChanged.connect(
             lambda _i: self._apply(
                 lambda it: setattr(it, "transition", self.transition.currentData())))
@@ -308,15 +393,17 @@ class ItemPanel(QWidget):
         self.bg_clear.clicked.connect(
             lambda: self._apply(lambda it: setattr(it, "path", None), kinds=("title",)))
         self.text.textChanged.connect(self._on_text)
-        self.position.currentIndexChanged.connect(
-            lambda _i: self._apply_text("position", self.position.currentData()))
+        self.position.currentIndexChanged.connect(self._on_position)
+        self.pad.moved.connect(self._on_pad)
         self.font_combo.activated.connect(self._on_font)
-        self.size.valueChanged.connect(lambda v: self._apply_text("size", v))
+        self.size.valueChanged.connect(lambda v: self._apply_own("size", v))
+        self.use_default_style.clicked.connect(self._use_default_style)
         self.bold.toggled.connect(lambda v: self._apply_text("bold", v))
-        self.color.colorChanged.connect(lambda c: self._apply_text("color", c))
+        self.color.colorChanged.connect(lambda c: self._apply_own("color", c))
         self.bar.toggled.connect(lambda v: self._apply_text("bar", v))
         self.bar_color.colorChanged.connect(lambda c: self._apply_text("bar_color", c))
         self.bar_opacity.valueChanged.connect(lambda v: self._apply_text("bar_opacity", v / 100))
+        self.fade.valueChanged.connect(lambda v: self._apply_text("fade", v))
 
     def _apply(self, fn: Callable[[Item], None], kinds: tuple[str, ...] | None = None) -> None:
         if self._loading or not self.items:
@@ -357,6 +444,108 @@ class ItemPanel(QWidget):
                     "ändert sich nichts.")
         self.audio_note.setText(note)
         self.audio_note.setVisible(bool(note))
+
+    def _clip_length(self, it: Item) -> float:
+        """Länge des Original-Videos in Sekunden; 0, wenn sie nicht lesbar ist."""
+        if self.project is None or it.path is None:
+            return 0.0
+        try:
+            return clip_length(self.project.resolve(it.path))
+        except (FFmpegError, OSError, ValueError):
+            return 0.0
+
+    def _trim(self, *, start: float | None = None, end: float | None = None) -> None:
+        """Von/Bis geändert: für jedes markierte Video, das andere Ende bleibt je Video."""
+        if self._loading:
+            return
+        videos = [it for it in self.items if it.kind == "video"]
+        if not videos:
+            return
+        for it in videos:
+            set_trim(it, self._clip_length(it), start=start, end=end)
+        self._load_trim()
+        self._refresh_header()
+        self.changed.emit()
+
+    def _load_trim(self) -> None:
+        video = next((it for it in self.items if it.kind == "video"), None)
+        was = self._loading
+        self._loading = True
+        try:
+            if video is None:
+                return
+            length = self._clip_length(video)
+            top = length if length > 0 else 36000.0
+            self.start.setRange(0.0, top)
+            self.end.setRange(0.0, top)
+            self.start.setValue(video.start)
+            end = trim_end(video, length) if length > 0 else 0.0
+            self.end.setValue(0.0 if length <= 0 or video.duration is None else end)
+            self.clip_info.setText(
+                f"Das Video ist {length_text(length)} lang." if length > 0 else "")
+        finally:
+            self._loading = was
+
+    def _rotate(self, degrees: int) -> None:
+        """Alle markierten Fotos drehen; ein Ausschnitt dreht mit, bleibt also am selben
+        Bildteil."""
+        if self._loading:
+            return
+        photos = [it for it in self.items if it.kind == "photo"]
+        if not photos:
+            return
+        for it in photos:
+            it.crop = rotate_crop(it.crop, degrees)
+            it.rotation = (it.rotation + degrees) % 360
+        self._load_crop()
+        self._load_rotation()
+        self._refresh_header()
+        self.changed.emit()
+
+    def _load_rotation(self) -> None:
+        photos = [it for it in self.items if it.kind == "photo"]
+        degrees = photos[0].rotation if photos else 0
+        text = {0: "", 90: "Gedreht: 90° rechts", 180: "Gedreht: 180°",
+                270: "Gedreht: 90° links"}[degrees]
+        if len({it.rotation for it in photos}) > 1:
+            text = "Die markierten Fotos sind unterschiedlich gedreht"
+        self.rotate_state.setText(text)
+
+    def _single_photo(self) -> Item | None:
+        """Der Ausschnitt gilt für genau ein markiertes Foto."""
+        if len(self.items) == 1 and self.items[0].kind == "photo":
+            return self.items[0]
+        return None
+
+    def _choose_crop(self) -> None:
+        item = self._single_photo()
+        if item is None or self.project is None or item.path is None:
+            return
+        try:
+            image = open_photo(self.project.resolve(item.path), draft=(1800, 1800),
+                               tolerant=item.tolerant_load)
+        except (DamagedFile, OSError) as e:
+            QMessageBox.warning(self, "Foto nicht lesbar",
+                                f"Das Foto kann nicht geöffnet werden:\n{e}")
+            return
+        dialog = CropDialog(rotate_image(image, item.rotation), item.crop, self)
+        if dialog.exec() == CropDialog.DialogCode.Accepted:
+            self._set_crop(dialog.result_crop())
+
+    def _set_crop(self, crop: list[float] | None) -> None:
+        item = self._single_photo()
+        if item is None or item.crop == crop:
+            return
+        item.crop = crop
+        self._load_crop()
+        self.changed.emit()
+
+    def _load_crop(self) -> None:
+        item = self._single_photo()
+        self.crop_state.setText("" if item is None or item.crop is None else
+                                f"Ausschnitt gesetzt: {round(item.crop[2] * 100)} % × "
+                                f"{round(item.crop[3] * 100)} % des Fotos")
+        self.crop_clear.setEnabled(item is not None and item.crop is not None)
 
     def _on_use_damaged(self, on: bool) -> None:
         def apply(it: Item) -> None:
@@ -401,11 +590,77 @@ class ItemPanel(QWidget):
         if it.text is None:
             first = self.items[0].text if self.items and self.items[0].text else DEFAULT_TEXT
             it.text = TextOverlay("", first.position, first.font, first.size, first.color,
-                                  first.bold, first.bar, first.bar_color, first.bar_opacity)
+                                  first.bold, first.bar, first.bar_color, first.bar_opacity,
+                                  first.fade, first.x, first.y, first.own_size, first.own_color)
         return it.text
 
     def _apply_text(self, field: str, value: object) -> None:
         self._apply(lambda it: setattr(self._overlay(it), field, value))
+
+    def _apply_own(self, field: str, value: object) -> None:
+        """Größe oder Farbe geändert: gilt ab jetzt als eigene Wahl dieses Textes."""
+        if self._loading:
+            return
+
+        def set_own(it: Item) -> None:
+            ov = self._overlay(it)
+            setattr(ov, field, value)
+            setattr(ov, f"own_{field}", True)
+        self._apply(set_own)
+        self._refresh_style_button()
+
+    def _use_default_style(self) -> None:
+        def reset(it: Item) -> None:
+            if it.text is not None:
+                it.text.own_size = it.text.own_color = False
+        self._apply(reset)
+        self._load()
+
+    def _refresh_style_button(self) -> None:
+        self.use_default_style.setEnabled(any(
+            it.text is not None and (it.text.own_size or it.text.own_color)
+            for it in self.items))
+
+    def _on_position(self, _index: int) -> None:
+        """Voreinstellung oder „Frei“: Frei startet dort, wo der Text gerade sitzt."""
+        if self._loading:
+            return
+        key = self.position.currentData()
+        if key == FREE_POSITION:
+            def free(it: Item) -> None:
+                ov = self._overlay(it)
+                if not ov.free:
+                    ov.x, ov.y = PRESET_POINTS[ov.position]
+            self._apply(free)
+        else:
+            def preset(it: Item) -> None:
+                ov = self._overlay(it)
+                ov.position, ov.x, ov.y = key, None, None
+            self._apply(preset)
+        self._load_position()
+
+    def _on_pad(self, x: float, y: float) -> None:
+        """Kreuz bewegt: Text frei positionieren (die Auswahl springt auf „Frei“)."""
+        def move(it: Item) -> None:
+            ov = self._overlay(it)
+            ov.x, ov.y = x, y
+        self._apply(move)
+        self._load_position()
+
+    def _load_position(self) -> None:
+        ov = self.items[0].text if self.items and self.items[0].text else DEFAULT_TEXT
+        was = self._loading
+        self._loading = True
+        try:
+            if ov.free:
+                assert ov.x is not None and ov.y is not None
+                self.position.setCurrentIndex(self.position.findData(FREE_POSITION))
+                self.pad.set_point(ov.x, ov.y, free=True)
+            else:
+                self.position.setCurrentIndex(max(0, self.position.findData(ov.position)))
+                self.pad.set_point(*PRESET_POINTS[ov.position], free=False)
+        finally:
+            self._loading = was
 
     def _on_text(self) -> None:
         text = self.text.toPlainText()
@@ -472,18 +727,30 @@ class ItemPanel(QWidget):
                 box.setVisible(bool(items))
             self.title_box.setVisible(bool(items) and kinds == {"title"})
             has_video = "video" in kinds
-            for w in (self.start, self.start_label, self.audio, self.volume,
+            for w in (self.start, self.start_label, self.end, self.end_label,
+                      self.clip_info, self.audio, self.volume,
                       self.volume_label):
                 w.setVisible(has_video)
             self._load_sound()
+            only_video = kinds == {"video"}
+            self.duration.setVisible(not only_video)
+            self.duration_label.setVisible(not only_video)
             has_media = bool(kinds & {"photo", "video"})
             self.fit.setVisible(has_media)
             self.fit_label.setVisible(has_media)
+            has_photo = "photo" in kinds
+            for w in (self.rotate_label, self.rotate_left, self.rotate_right, self.rotate_state):
+                w.setVisible(has_photo)
+            self._load_rotation()
+            single_photo = self._single_photo() is not None
+            for w in (self.crop_label, self.crop_button, self.crop_clear, self.crop_state):
+                w.setVisible(single_photo)
+            self._load_crop()
             if not items:
                 return
             it = items[0]
             self.duration.setValue(it.duration or 0.0)
-            self.start.setValue(it.start)
+            self._load_trim()
             self.fit.setCurrentIndex(max(0, self.fit.findData(it.fit)))
             self.transition.setCurrentIndex(max(0, self.transition.findData(it.transition)))
             self.transition_duration.setValue(it.transition_duration or 0.0)
@@ -493,19 +760,23 @@ class ItemPanel(QWidget):
             ov = it.text or DEFAULT_TEXT
             if self.text.toPlainText() != ov.text:
                 self.text.setPlainText(ov.text)
-            self.position.setCurrentIndex(max(0, self.position.findData(ov.position)))
+            self._load_position()
             font_idx = self.font_combo.findData(ov.font)
             if font_idx < 0:
                 self.font_combo.insertItem(self.font_combo.count() - 1, font_label(ov.font),
                                            ov.font)
                 font_idx = self.font_combo.findData(ov.font)
             self.font_combo.setCurrentIndex(font_idx)
-            self.size.setValue(ov.size)
+            shown = self.project.styled(it) if self.project is not None else it
+            style = shown.text or DEFAULT_TEXT
+            self.size.setValue(style.size)
             self.bold.setChecked(ov.bold)
-            self.color.set_color(ov.color)
+            self.color.set_color(style.color)
+            self._refresh_style_button()
             self.bar.setChecked(ov.bar)
             self.bar_color.set_color(ov.bar_color)
             self.bar_opacity.setValue(round(ov.bar_opacity * 100))
+            self.fade.setValue(ov.fade)
         finally:
             self._loading = False
 
@@ -535,6 +806,24 @@ class ProjectPanel(QWidget):
         form.addRow("Übergang", self.transition)
         self.transition_duration = _spin(0.25, 5.0, 0.25, " s", decimals=2)
         form.addRow("Übergangsdauer", self.transition_duration)
+        self.text_size = QSpinBox()
+        self.text_size.setRange(12, 300)
+        self.text_size.setSuffix(" px")
+        self.text_size.setKeyboardTracking(False)
+        self.text_size.setToolTip("Schriftgröße für alle Texte, die keine eigene Größe haben "
+                                  "(bezogen auf Full HD)")
+        form.addRow("Schriftgröße", self.text_size)
+        self.text_color = ColorButton("Standard-Textfarbe")
+        self.text_color.setToolTip("Textfarbe für alle Texte, die keine eigene Farbe haben")
+        form.addRow("Schriftfarbe", self.text_color)
+        self.duck = QSpinBox()
+        self.duck.setRange(0, round(MAX_DUCK * 100))
+        self.duck.setSuffix(" %")
+        self.duck.setKeyboardTracking(False)
+        self.duck.setToolTip("Lautstärke der Musik, solange ein Video mit Originalton läuft "
+                             "(für alle Videos der Show gleich). Sie wird sanft abgesenkt und "
+                             "danach wieder angehoben.")
+        form.addRow("Musik bei Originalton", self.duck)
         self.chapters = QCheckBox("Zwischentitel für jeden Monat")
         self.chapters.setToolTip("Vor jedem neuen Monat erscheint ein Titel wie „März 2026“. "
                                  "Den Text können Sie in der Zeitleiste anklicken und ändern.")
@@ -557,6 +846,12 @@ class ProjectPanel(QWidget):
         self.resolution.currentIndexChanged.connect(
             lambda _i: self._set(
                 lambda p: setattr(p.settings, "resolution", self.resolution.currentData())))
+        self.text_size.valueChanged.connect(
+            lambda v: self._set(lambda p: setattr(p.settings, "text_size", v)))
+        self.text_color.colorChanged.connect(
+            lambda c: self._set(lambda p: setattr(p.settings, "text_color", c)))
+        self.duck.valueChanged.connect(
+            lambda v: self._set(lambda p: setattr(p.music, "duck_volume", v / 100)))
         self.chapters.toggled.connect(self._on_chapters)
 
     def _set(self, fn: Callable[[Project], None]) -> None:
@@ -578,6 +873,9 @@ class ProjectPanel(QWidget):
             self.photo_duration.setValue(s.photo_duration)
             self.transition.setCurrentIndex(max(0, self.transition.findData(s.transition)))
             self.transition_duration.setValue(s.transition_duration)
+            self.text_size.setValue(s.text_size)
+            self.text_color.set_color(s.text_color)
+            self.duck.setValue(round(project.music.duck_volume * 100))
             self.chapters.setChecked(s.chapters)
             self.resolution.setCurrentIndex(max(0, self.resolution.findData(s.resolution)))
         finally:

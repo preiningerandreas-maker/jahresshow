@@ -20,7 +20,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from slideshow.app.mainwindow import ImportOutcome, MainWindow, export_summary
 from slideshow.app.single import KEY_ENV, SingleInstance
-from slideshow.core.chapters import is_chapter_title
+from slideshow.core.chapters import apply_chapters, is_chapter_title
 from slideshow.core.project import Item, Project, TextOverlay
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -353,7 +353,7 @@ def test_music_playlist(qtbot, window: MainWindow, synthetic: Path) -> None:  # 
     panel.list.setCurrentRow(1)
     panel.up_button.click()
     assert [Path(t).name for t in window.project.music.tracks] == [m2.name, m1.name]
-    panel.duck.setValue(30)
+    window.project_panel.duck.setValue(30)
     panel.fade.setValue(5)
     assert window.project.music.duck_volume == pytest.approx(0.3)
     assert window.project.music.fade_out == 5.0
@@ -1290,7 +1290,10 @@ def test_export_summary_reports_gpu_failure(qtbot, auto_window: MainWindow,  # n
 def test_name_and_copyright_visible(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
     from slideshow import __version__
 
-    assert window.windowTitle() == "Neues Projekt – Flashback"
+    assert window.windowTitle() == "Neues Projekt – Flashback 2.0, November 2026"
+    assert window.version_label.text() == "Flashback 2.0, November 2026"
+    assert window.version_label.isVisible()
+    assert window.version_label.parentWidget() is window.statusBar()
     # Statusleiste: dauerhaft rechts unten, vollständig lesbar
     label = window.copyright_label
     assert label.text() == "© 2026 Andreas Preininger"
@@ -1307,5 +1310,59 @@ def test_name_and_copyright_visible(window: MainWindow, monkeypatch: pytest.Monk
     window.act_about.trigger()
     assert shown and shown[0][0] == "Über Flashback"
     text = shown[0][1]
-    for part in ("Flashback", f"Version {__version__}", "© 2026 Andreas Preininger", "Lizenzen"):
+    for part in ("Flashback 2.0, November 2026", f"Version {__version__}",
+                 "© 2026 Andreas Preininger", "Lizenzen"):
         assert part in text, part
+
+
+def test_delete_single_month_title_and_undo(qtbot, window: MainWindow) -> None:  # noqa: ANN001
+    ph = [Item("photo", path="a.jpg", taken="2022-09-03T10:00:00"),
+          Item("photo", path="b.jpg", taken="2022-10-03T10:00:00")]
+    window.model.replace_items(apply_chapters(ph, True))
+    titles = [i for i, it in enumerate(window.project.items) if is_chapter_title(it)]
+    assert len(titles) == 2
+    n = len(window.project.items)
+    window.timeline.select_rows([titles[0]])
+    window.remove_selected()
+    assert len(window.project.items) == n - 1
+    assert [it.chapter for it in window.project.items if is_chapter_title(it)] == ["2022-10"]
+    assert window.project.settings.skipped_chapters == ["2022-09"]
+    # Neuaufbau (z. B. Sortieren) bringt den gelöschten Titel nicht zurück
+    window.sort_by_date()
+    assert len([it for it in window.project.items if is_chapter_title(it)]) == 1
+    # Strg+Z nimmt das Löschen zurück
+    assert window.act_undo.shortcut().toString() == "Ctrl+Z"
+    window.undo()
+    assert len(window.project.items) == n
+    assert window.project.settings.skipped_chapters == []
+    assert [it.chapter for it in window.project.items if is_chapter_title(it)] == [
+        "2022-09", "2022-10"]
+
+
+def test_restore_deleted_month_titles(qtbot, window: MainWindow) -> None:  # noqa: ANN001
+    ph = [Item("photo", path="a.jpg", taken="2022-09-03T10:00:00"),
+          Item("photo", path="b.jpg", taken="2022-10-03T10:00:00")]
+    window.model.replace_items(apply_chapters(ph, True))
+    assert not window.act_restore_chapters.isEnabled()
+    titles = [i for i, it in enumerate(window.project.items) if is_chapter_title(it)]
+    window.timeline.select_rows(titles)
+    window.remove_selected()
+    assert not any(is_chapter_title(it) for it in window.project.items)
+    assert window.act_restore_chapters.isEnabled()
+    window.restore_chapters()  # wie nach Speichern und Neuöffnen: Liste steht im Projekt
+    assert [it.chapter for it in window.project.items if is_chapter_title(it)] == [
+        "2022-09", "2022-10"]
+    assert window.project.settings.skipped_chapters == []
+    assert not window.act_restore_chapters.isEnabled()
+    window.undo()  # Wiedereinsetzen lässt sich ebenfalls zurücknehmen
+    assert not any(is_chapter_title(it) for it in window.project.items)
+    assert window.project.settings.skipped_chapters == ["2022-09", "2022-10"]
+    assert window.act_restore_chapters.isEnabled()
+
+
+def test_duck_slider_in_show_tab(qtbot, window: MainWindow) -> None:  # noqa: ANN001
+    duck = window.project_panel.duck
+    assert duck.value() == 20 and (duck.minimum(), duck.maximum()) == (0, 50)
+    assert not hasattr(window.music_panel, "duck")
+    duck.setValue(35)
+    assert window.project.music.duck_volume == pytest.approx(0.35)

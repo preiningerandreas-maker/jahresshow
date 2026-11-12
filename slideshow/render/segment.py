@@ -12,7 +12,8 @@ from PIL import Image
 from slideshow.core.ffmpeg import ProgressCallback, run_ffmpeg
 from slideshow.core.importer import open_photo, video_info
 from slideshow.core.normalize import cached_normalized, normalize_video, to_bt709_scale
-from slideshow.core.project import FPS, Item, Project, TimelineEntry
+from slideshow.core.photoedit import apply_crop, draft_size, rotate_image
+from slideshow.core.project import FPS, Item, Project, TextOverlay, TimelineEntry
 from slideshow.render.cache import (
     cleanup_tmp,
     commit_tmp,
@@ -92,15 +93,24 @@ def fit_filter(fit: str, w: int, h: int, src: str, out: str) -> str:
 
 def _item_settings(item: Item) -> dict:
     d = asdict(item)
+    if d.get("text"):  # nur das Ergebnis zählt (Größe/Farbe), nicht woher es kommt
+        d["text"].pop("own_size", None)
+        d["text"].pop("own_color", None)
     # Übergänge, Dauer (steckt in frames) und Kapitel gehören nicht in den Schlüssel
     for k in ("transition", "transition_duration", "duration", "chapter", "taken", "path",
               "damage", "damage_readable"):
         d.pop(k, None)
+    # Neue Felder nur im Schlüssel, wenn gesetzt: Segmente aus früheren Versionen bleiben gültig
+    if d.get("crop") is None:
+        d.pop("crop", None)
+    if not d.get("rotation"):
+        d.pop("rotation", None)
     return d
 
 
 def _picture_key_data(project: Project, item: Item, cache_dir: Path) -> dict:
     """Was das Bild eines Elements bestimmt: Einstellungen, Quelle, Schrift."""
+    item = project.styled(item)
     data: dict = {"item": _item_settings(item)}
     if item.path:
         src = project.resolve(item.path)
@@ -130,11 +140,16 @@ def still_key(project: Project, item: Item, w: int, h: int, cache_dir: Path) -> 
 
 
 def prepare_photo(src: Path, w: int, h: int, out: Path, *, fast: bool = False,
-                  tolerant: bool = False) -> Path:
-    """Foto (auch HEIC) laden, EXIF-Drehung anwenden, auf nötige Größe verkleinern, als PNG.
+                  tolerant: bool = False, crop: list[float] | None = None,
+                  rotation: int = 0) -> Path:
+    """Foto (auch HEIC) laden, EXIF-Drehung und Bildausschnitt anwenden, auf nötige Größe
+    verkleinern, als PNG.
     fast: JPEG gleich verkleinert dekodieren (Vorschau; deutlich schneller bei 12 MP).
-    tolerant: beschädigtes Bild mit seinem lesbaren Teil verwenden."""
-    img = open_photo(src, draft=(w, h) if fast else None, tolerant=tolerant)
+    tolerant: beschädigtes Bild mit seinem lesbaren Teil verwenden.
+    rotation: zusätzliche Drehung im Uhrzeigersinn (0/90/180/270), vor dem Ausschnitt.
+    crop: fixer Ausschnitt [links, oben, Breite, Höhe] in Anteilen des gedrehten Bildes."""
+    img = open_photo(src, draft=draft_size(w, h, crop) if fast else None, tolerant=tolerant)
+    img = apply_crop(rotate_image(img, rotation), crop)
     factor = max(w / img.width, h / img.height)  # Größe, die den Rahmen füllend abdeckt
     if factor < 1:
         size = (max(2, round(img.width * factor)), max(2, round(img.height * factor)))
@@ -153,12 +168,27 @@ class Picture:
     last: str  # Name des letzten Ausgangs im Graphen
     work: list[Path] = field(default_factory=list)  # Arbeitsdateien, danach löschen
     has_audio: bool = False
+    # Standbild schon auf die Segmentlänge wiederholt (nötig, wenn der Text überblendet)
+    looped: bool = False
+
+
+def text_fade_seconds(overlay: TextOverlay, frames: int | None) -> float:
+    """Dauer der Ein- und Ausblendung des Textes in Sekunden, 0 = keine. Nur bei bekannter
+    Segmentlänge (Export, Vorschau); höchstens die halbe Länge, damit sich beide nie
+    überlappen, und mindestens ein Bild."""
+    if frames is None or overlay.fade <= 0:
+        return 0.0
+    seconds = min(overlay.fade, frames / FPS / 2)
+    return seconds if seconds * FPS >= 1 else 0.0
 
 
 def build_picture(project: Project, item: Item, w: int, h: int, cache_dir: Path,
-                  work_base: Path, *, fast: bool = False) -> Picture:
+                  work_base: Path, *, fast: bool = False, frames: int | None = None) -> Picture:
     """work_base: Pfad ohne Endung für Arbeitsdateien (bekommen eindeutige Namen).
-    fast: Fotos beschleunigt verkleinert laden (nur für Vorschauen)."""
+    fast: Fotos beschleunigt verkleinert laden (nur für Vorschauen).
+    frames: Länge des Segments; nur damit blendet der Text ein und aus (das Standbild der
+    Vorschau zeigt den Text immer ganz)."""
+    item = project.styled(item)
     work: list[Path] = []
     args: list[str] = []
     graph: list[str] = []
@@ -191,7 +221,9 @@ def build_picture(project: Project, item: Item, w: int, h: int, cache_dir: Path,
         else:
             assert item.path is not None
             prepare_photo(project.resolve(item.path), w, h, pre, fast=fast,
-                          tolerant=item.tolerant_load)
+                          tolerant=item.tolerant_load,
+                          crop=item.crop if item.kind == "photo" else None,
+                          rotation=item.rotation if item.kind == "photo" else 0)
             fit = item.fit
         work.append(pre)
         args += ["-framerate", str(FPS), "-i", str(pre)]
@@ -203,12 +235,35 @@ def build_picture(project: Project, item: Item, w: int, h: int, cache_dir: Path,
     # Erst Bild und Text getrennt nach bt709 YUV, dann in YUV überblenden
     graph.append(f"[fit]{to_bt709(assume_bt709)}[base]")
     last = "base"
+    looped = False
     if text_png is not None:
-        args += ["-i", str(text_png)]
-        graph.append(f"[1:v]{TEXT_TO_YUV}[text]")
+        assert item.text is not None
+        fade = text_fade_seconds(item.text, frames)
+        if fade > 0:
+            assert frames is not None
+            seconds = frames / FPS
+            if item.kind != "video":
+                # Das Standbild (Unschärfe usw. nur einmal berechnet) jetzt auf die Länge
+                # bringen: der Text bewegt sich und braucht in jedem Bild eine Unterlage
+                graph.append(f"[{last}]loop=loop={frames - 1}:size=1:start=0,"
+                             f"settb=1/{FPS},setpts=N[looped]")
+                last = "looped"
+                looped = True
+            args += ["-loop", "1", "-framerate", str(FPS), "-t", f"{seconds:.6f}",
+                     "-i", str(text_png)]
+            # Die Ausblendung endet mit dem letzten Bild: dort ist der Text ganz weg
+            out_start = max(fade, seconds - fade - 1 / FPS)
+            graph.append(
+                f"[1:v]{TEXT_TO_YUV},"
+                f"fade=t=in:st=0:d={fade:.6f}:alpha=1,"
+                f"fade=t=out:st={out_start:.6f}:d={fade:.6f}:alpha=1[text]"
+            )
+        else:
+            args += ["-i", str(text_png)]
+            graph.append(f"[1:v]{TEXT_TO_YUV}[text]")
         graph.append(f"[{last}][text]overlay=0:0:format=yuv420[txt]")
         last = "txt"
-    return Picture(args, graph, last, work, has_audio)
+    return Picture(args, graph, last, work, has_audio, looped)
 
 
 def render_still(project: Project, item: Item, w: int, h: int, out: Path, cache_dir: Path,
@@ -260,7 +315,7 @@ def render_segment(
     seconds = f"{n / FPS:.6f}"
     samples = n * SAMPLES_PER_FRAME
     pic = build_picture(project, item, cfg.width, cfg.height, cfg.cache_dir,
-                        cfg.work_dir / key)
+                        cfg.work_dir / key, frames=n)
     args, graph, last, work = pic.args, pic.graph, pic.last, pic.work
     has_audio = pic.has_audio
 
@@ -270,6 +325,8 @@ def render_segment(
             f"[{last}]tpad=stop_mode=clone:stop_duration={seconds},"
             f"trim=end_frame={n},settb=1/{FPS},setpts=N[v]"
         )
+    elif pic.looped:
+        graph.append(f"[{last}]trim=end_frame={n},settb=1/{FPS},setpts=N[v]")
     else:
         # Standbild nur einmal berechnen und dann wiederholen
         graph.append(
