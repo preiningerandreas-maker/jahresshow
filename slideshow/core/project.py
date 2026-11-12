@@ -219,6 +219,8 @@ class Settings:
     # Standard für alle Texte, die keine eigene Größe/Farbe haben (TextOverlay.own_size/own_color)
     text_size: int = DEFAULT_TEXT_SIZE
     text_color: str = DEFAULT_TEXT_COLOR
+    # Monate ("2022-09"), deren Zwischentitel der Nutzer gelöscht hat: kein neuer Titel
+    skipped_chapters: list[str] = field(default_factory=list)
 
     def validate(self) -> None:
         if self.transition not in TRANSITIONS:
