@@ -37,13 +37,14 @@ VERSION = VSVersionInfo(
 )
 
 # Qt-Module, die das Programm nicht braucht. Es verwendet nur QtCore, QtGui, QtWidgets,
-# QtNetwork (Named Pipe für die Einzelinstanz) und QtSvg (Symbole).
+# QtNetwork (Named Pipe für die Einzelinstanz), QtSvg (Symbole) und QtMultimedia (nur das
+# Vorhören an der Schnitt-Leiste, siehe DROP für die FFmpeg-Anbindung von Qt).
 QT_EXCLUDES = [
     f"PySide6.{m}" for m in (
         "Qt3DAnimation", "Qt3DCore", "Qt3DExtras", "Qt3DInput", "Qt3DLogic", "Qt3DRender",
         "QtBluetooth", "QtCharts", "QtConcurrent", "QtDataVisualization", "QtDBus",
         "QtDesigner", "QtGraphs", "QtGraphsWidgets", "QtHelp", "QtHttpServer", "QtLocation",
-        "QtMultimedia", "QtMultimediaWidgets", "QtNetworkAuth", "QtNfc", "QtOpenGL",
+        "QtMultimediaWidgets", "QtNetworkAuth", "QtNfc", "QtOpenGL",
         "QtOpenGLWidgets", "QtPdf", "QtPdfWidgets", "QtPositioning", "QtPrintSupport",
         "QtQml", "QtQuick", "QtQuick3D", "QtQuickControls2", "QtQuickTest",
         "QtQuickWidgets", "QtRemoteObjects", "QtScxml", "QtSensors", "QtSerialBus",
@@ -67,6 +68,8 @@ DROP = re.compile(
     r"|plugins[\\/]platforms[\\/]qdirect2d\.dll$"
     r"|Qt6(Quick|Qml|Pdf|OpenGL|VirtualKeyboard)\w*\.dll$"
     r"|opengl32sw\.dll$"
+    r"|plugins[\\/]multimedia[\\/]ffmpegmediaplugin\.dll$"
+    r"|(avcodec|avformat|avutil|swresample|swscale)-\d+\.dll$"
     r"|translations[\\/](?!qt(base)?_de\.qm$)"
     r")",
     re.IGNORECASE,

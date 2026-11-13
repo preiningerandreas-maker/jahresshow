@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (
 )
 
 from slideshow.app.properties import form_layout
+from slideshow.app.scrubwidgets import AudioScrub
+from slideshow.app.trimbar import START, TrimBar
 from slideshow.core.ffmpeg import FFmpegError, probe
 from slideshow.core.importer import MUSIC_EXTS
 from slideshow.core.project import Project
@@ -55,9 +57,10 @@ def format_minutes(seconds: float) -> str:
 class MusicPanel(QWidget):
     changed = Signal()
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, cache_dir: Path | None = None) -> None:
         super().__init__(parent)
         self.project: Project | None = None
+        self._bar_src: Path | None = None
         self._lengths: dict[Path, float | None] = {}
         self._show_seconds: float | None = None
         self._loading = False
@@ -89,6 +92,13 @@ class MusicPanel(QWidget):
 
         tbox = QGroupBox("Ausschnitt des markierten Stücks")
         tform = form_layout(tbox)
+        # Schnitt-Leiste: beim Ziehen hört man die Stelle des Schiebers
+        self.trim_bar = TrimBar(MIN_TRIM)
+        self.trim_bar.setToolTip("Anfang und Ende des Stücks ziehen. Beim Ziehen hören Sie "
+                                 "die Stelle des Schiebers. Pfeiltasten verschieben um 0,5 s "
+                                 "(Pfeil hoch/runter wechselt den Schieber).")
+        tform.addRow(self.trim_bar)
+        self.listen = AudioScrub(cache_dir, self) if cache_dir is not None else None
         self.trim_start = QDoubleSpinBox()
         self.trim_start.setDecimals(1)
         self.trim_start.setSingleStep(1.0)
@@ -134,6 +144,8 @@ class MusicPanel(QWidget):
         self.list.itemSelectionChanged.connect(self._load_trim)
         self.trim_start.valueChanged.connect(self._on_trim)
         self.trim_end.valueChanged.connect(self._on_trim)
+        self.trim_bar.changing.connect(self._on_bar_changing)
+        self.trim_bar.committed.connect(self._on_bar_committed)
         self.trim_reset.clicked.connect(self._reset_trim)
         self._load_trim()
 
@@ -190,6 +202,10 @@ class MusicPanel(QWidget):
             if track is None or self.project is None:
                 self.trim_start.setValue(0.0)
                 self.trim_end.setValue(0.0)
+                self.trim_bar.setVisible(False)
+                if self.listen is not None:
+                    self.listen.set_source(None)
+                    self._bar_src = None
                 return
             length = self._track_length(track)
             top = length if length else 36000.0
@@ -198,14 +214,44 @@ class MusicPanel(QWidget):
             start, end = self.project.music.trim_of(track)
             self.trim_start.setValue(start)
             self.trim_end.setValue(end or 0.0)
+            self.trim_bar.setVisible(bool(length))
+            if length:
+                self.trim_bar.set_length(length)
+                self.trim_bar.set_values(start, end or 0.0)
+            if self.listen is not None:
+                src = self.project.resolve(track)
+                if src != self._bar_src:
+                    self._bar_src = src
+                    self.listen.set_source(src if length else None)
         finally:
             self._loading = was
 
+    def _on_bar_changing(self, which: str, start: float, end: float) -> None:
+        """Schieber wird gezogen: Sekundenfelder mitführen und die Stelle vorhören."""
+        was = self._loading
+        self._loading = True
+        try:
+            self.trim_start.setValue(start)
+            self.trim_end.setValue(0.0 if end >= self.trim_bar.length - 0.05 else end)
+        finally:
+            self._loading = was
+        if self.listen is not None:
+            self.listen.listen_at(start if which == START else max(end - 1.0, 0.0))
+
+    def _on_bar_committed(self, start: float, end: float) -> None:
+        if self.listen is not None:
+            self.listen.stop()
+        self._apply_trim(start, 0.0 if end >= self.trim_bar.length - 0.05 else end)
+
     def _on_trim(self) -> None:
+        if self._loading:
+            return
+        self._apply_trim(self.trim_start.value(), self.trim_end.value())
+
+    def _apply_trim(self, start: float, end: float) -> None:
         track = self._selected_track()
         if self._loading or track is None or self.project is None:
             return
-        start, end = self.trim_start.value(), self.trim_end.value()
         length = self._track_length(track)
         if end > 0 and end <= start:
             end = min(start + MIN_TRIM, length) if length else start + MIN_TRIM
