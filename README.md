@@ -115,3 +115,9 @@ sie übersprungen.
 - Tests für echte Beispieldateien laufen nur, wenn `tests\media\real\` existiert.
 - Die Screenshot-Tests legen Bilder des Fensters (1366×768 und 150 % Skalierung, Windows-10-
   und Windows-11-Stil) in `out\screens\` ab.
+
+## Lizenz
+
+Flashback steht unter der GNU General Public License Version 3 (siehe `LICENSE`).
+Das fertige Paket enthält Fremdsoftware (u. a. FFmpeg, PySide6); deren Lizenzen liegen im
+Ordner `Lizenzen` des Pakets und in `packaging/licenses/`.
