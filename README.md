@@ -2,9 +2,89 @@
 
 © 2026 Andreas Preininger. Früher hieß das Projekt „Jahresshow“ (Repository und Projektordner heißen weiter so).
 
-Slideshow aus Fotos und Videos mit eigener Musik und Texten als MP4. Für Entwicklung und
-Tests unter Windows 10/11. Das fertige Paket (`Flashback.exe`, ohne Python) entsteht in
-Meilenstein 4.
+Flashback macht aus Fotos und Videos eine Slideshow mit eigener Musik und Texten und speichert
+sie als MP4. Gedacht ist es für den Jahresrückblick: Ordner hineinziehen, ein paar Texte
+ergänzen, Video erstellen. Es läuft unter Windows 10 und 11, ohne Python und ohne Internet.
+
+Die Oberfläche ist auf Deutsch. Dieser erste Teil der README erklärt, was das Programm kann
+und wie du ein Video machst. Ab „Für Entwickler“ geht es um Einrichtung, Tests und das Bauen
+des Pakets.
+
+## Was Flashback kann
+
+- Fotos (JPG, PNG, HEIC) und Videos (MP4, MOV) aus Ordnern oder per Drag & Drop einlesen,
+  auch HEVC- und HDR-Videos vom Handy
+- Nach Aufnahmedatum sortieren und Fotos nach der Kameradrehung richtig stellen
+- Für jeden Monat einen Zwischentitel einfügen, der sich ändern oder löschen lässt
+- Fotos in 90-Grad-Schritten drehen und auf einen festen Ausschnitt zuschneiden
+- Videos mit „Video von“ und „Video bis“ kürzen und den Originalton pro Clip lauter, leiser
+  oder aus stellen
+- Texte ins Bild setzen: Schrift, Größe, Farbe, halbtransparenter Balken, sanftes Ein- und
+  Ausblenden, Position oben, Mitte, unten oder frei per Kreuz
+- Eine Titelkarte am Anfang, auf Farbfläche oder auf einem Foto
+- Neun Übergänge, darunter Überblenden, Wischen, Zoom, Kreis öffnen, Drehwischer und Pixel
+- Musik aus eigenen Dateien (MP3, M4A, WAV, FLAC) als Playlist, jedes Stück auf einen
+  Ausschnitt kürzbar, am Ende ausgeblendet; während Videos mit Originalton wird die Musik
+  leiser
+- Hochkant-Fotos wahlweise mit unscharfem Hintergrund, schwarzen Rändern oder zugeschnitten
+- Vorschau eines Abschnitts in niedriger Auflösung, Export als MP4 in Full HD oder 4K
+- Projekte speichern und später weiterbearbeiten
+
+## Anleitung: In sieben Schritten zum Video
+
+Das Programm startest du mit `Flashback.exe` (siehe „Programm starten“ weiter unten).
+
+1. Material einlesen. Oben in der Leiste auf „Ordner“ klicken und den Ordner mit deinen
+   Fotos und Videos wählen, oder einzelne Dateien mit „Dateien“ hinzufügen. Du kannst sie
+   auch aus dem Explorer in das Fenster ziehen. Videos vom Handy werden nach dem Einlesen
+   einmal umgewandelt, den Fortschritt siehst du unten im Fenster. Doppelte Dateien meldet
+   das Programm.
+2. Reihenfolge prüfen. Die Zeitleiste zeigt alles nach Aufnahmedatum sortiert, mit einem
+   Zwischentitel vor jedem Monat. Bilder ziehst du mit der Maus an eine andere Stelle.
+   „Markierte entfernen“ nimmt Bilder heraus, mit Strg+Z holst du sie zurück.
+3. Einzelne Bilder bearbeiten. Klick ein Element an und wechsle rechts in den Reiter
+   „Element“. Dort stellst du die Anzeigedauer ein, drehst Fotos, wählst einen Ausschnitt,
+   kürzt Videos und gibst einen Text samt Position ein. Bei Hochkant-Bildern legst du unter
+   „Bildformat“ fest, was neben dem Bild erscheint.
+4. Die ganze Show einstellen. Im Reiter „Show“ legst du den Namen fest, wie lange Fotos
+   stehen, welcher Übergang gilt, Schriftgröße und Farbe für alle Texte, die Lautstärke der
+   Musik bei Originalton, ob es Monats-Zwischentitel gibt, und ob in Full HD oder 4K
+   exportiert wird.
+5. Titelkarte anlegen. Mit „Titelkarte“ in der Leiste setzt du einen Titel an den
+   Anfang, auf einer Farbfläche oder auf einem Foto.
+6. Musik hinzufügen. Im Reiter „Musik“ fügst du mit „Musik hinzufügen …“ Stücke hinzu und
+   ordnest sie mit „Nach oben“ und „Nach unten“. Für das markierte Stück wählst du einen
+   Ausschnitt, falls es kürzer laufen soll.
+7. Vorschau und Export. „Vorschau“ rechnet den gewählten Abschnitt in niedriger Qualität,
+   damit du Übergänge und Texte prüfen kannst. Mit „Video erstellen“ (Strg+E) entsteht das
+   fertige MP4. Vorher zeigt das Programm die geschätzte Dateigröße und warnt ab 4 GB, weil
+   FAT32-USB-Sticks größere Dateien nicht aufnehmen. Der Export läuft im Hintergrund und lässt
+   sich abbrechen.
+
+Zwischendurch speicherst du mit Strg+S. Das Projekt ist eine JSON-Datei, die sich später
+wieder öffnen lässt. Ältere Projekte laden weiterhin.
+
+Kleine Tipps: Mit Strg und Mausrad änderst du die Größe der Bilder in der Zeitleiste. Fährst
+du mit der Maus über ein Feld, steht dort meist eine kurze Erklärung.
+
+## Programm starten
+
+Das fertige Programm ist ein Ordner „Flashback“ mit `Flashback.exe`. Der ganze Ordner wird
+gebraucht, nichts daraus darf gelöscht oder verschoben werden. Kommt er als ZIP, entpackst du
+ihn zuerst mit „Alle extrahieren“. Beim ersten Start meldet Windows eventuell eine
+SmartScreen-Warnung, weil das Programm nicht signiert ist. Wie du damit umgehst, steht in
+`packaging/README.txt`, die dem Programm beiliegt.
+
+Auf GitHub liegt das fertige Paket derzeit nicht. Du kannst es nach der Anleitung unter
+„Windows-Paket bauen“ selbst erzeugen.
+
+Voraussetzungen: Windows 10 oder 11 (64 Bit), 8 GB Arbeitsspeicher und freier Speicherplatz
+von etwa dem Dreifachen deines Materials. Auf langsamen Rechnern dauert alles länger, geht
+aber.
+
+## Für Entwickler
+
+Der Rest dieser Datei beschreibt Einrichtung, Kommandozeile, Paketbau und Tests.
 
 ## Voraussetzungen
 
