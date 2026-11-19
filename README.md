@@ -75,7 +75,8 @@ ihn zuerst mit „Alle extrahieren“. Beim ersten Start meldet Windows eventuel
 SmartScreen-Warnung, weil das Programm nicht signiert ist. Wie du damit umgehst, steht in
 `packaging/README.txt`, die dem Programm beiliegt.
 
-Auf GitHub liegt das fertige Paket derzeit nicht. Du kannst es nach der Anleitung unter
+Das fertige Paket lädst du unter „Releases“ auf der rechten Seite dieser GitHub-Seite
+(Datei `Flashback-2.0-Windows.zip`). Du kannst es auch nach der Anleitung unter
 „Windows-Paket bauen“ selbst erzeugen.
 
 Voraussetzungen: Windows 10 oder 11 (64 Bit), 8 GB Arbeitsspeicher und freier Speicherplatz
